@@ -1,0 +1,38 @@
+{
+  "id": "ta4",
+  "name": "Bachin TA4",
+  "machineKind": "pen_plotter",
+  "workArea": {
+    "x": 210,
+    "y": 297,
+    "z": 12
+  },
+  "origin": "top-left",
+  "baudRate": 115200,
+  "travelSpeed": 6000,
+  "drawingSpeed": 1000,
+  "stepsPerMm": {
+    "x": 50,
+    "y": 50,
+    "z": 40
+  },
+  "penUpCommand": "G1 Z0 F2000",
+  "penDownCommand": "G1 Z8 F2000",
+  "penUpValue": 0,
+  "penDownValue": 8,
+  "safeStartupSequence": [
+    "G21",
+    "G90",
+    "G10 L2 P1 X0 Y0 Z0"
+  ],
+  "safeShutdownSequence": [
+    "G1 Z0 F2000",
+    "M5"
+  ],
+  "_notes": {
+    "penUpCommand": "Phase 0: TO BE CONFIRMED via hardware testing",
+    "penDownCommand": "Phase 0: TO BE CONFIRMED via hardware testing",
+    "origin": "Initial assumption - may need adjustment based on user preference",
+    "workArea": "From BachinMaker logs: X=210, Y=297, Z=12"
+  }
+}
