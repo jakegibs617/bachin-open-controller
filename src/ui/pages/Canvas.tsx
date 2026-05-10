@@ -15,7 +15,7 @@ import React from 'react';
 import { BoundingBox, Canvas as CanvasModel, LengthUnit, MachineProfile, Path } from '../../types';
 import { formatLength, fromMillimeters, toMillimeters, UNIT_LABELS } from '../../core/units';
 import { SVGParser, normalizePathToMachineCoordinates } from '../../importers/svg';
-import { traceRasterToPaths } from '../../importers/raster';
+import { smoothPaths, traceRasterToPaths } from '../../importers/raster';
 import { GCodeGenerator } from '../../core/gcode';
 import ta4Profile from '../../../profiles/ta4.json';
 import { PreparedJob } from '../App';
@@ -34,14 +34,15 @@ const canvas: CanvasModel = {
   offsetX: 0,
   offsetY: 0
 };
-type RasterMode = 'outline' | 'fill' | 'centerline';
+type RasterMode = 'outline' | 'fill' | 'centerline' | 'dither';
 type GridUnit = 'mm' | 'cm' | 'in';
 
 const RASTER_TRACE_SIZES = {
-  draft: 160,
-  normal: 260,
-  fine: 380,
-  ultra: 560
+  draft: 320,
+  normal: 512,
+  fine: 1024,
+  ultra: 1536,
+  max: 2048
 };
 
 type RasterDetail = keyof typeof RASTER_TRACE_SIZES;
@@ -222,8 +223,13 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const [message, setMessage] = React.useState('Import an SVG path file to prepare a TA4 plotting job.');
   const [error, setError] = React.useState<string | null>(null);
   const [rasterMode, setRasterMode] = React.useState<RasterMode>('outline');
-  const [rasterDetail, setRasterDetail] = React.useState<RasterDetail>('normal');
+  const [rasterDetail, setRasterDetail] = React.useState<RasterDetail>('fine');
   const [threshold, setThreshold] = React.useState(170);
+  const [brightness, setBrightness] = React.useState(0);
+  const [contrast, setContrast] = React.useState(100);
+  const [blurRadius, setBlurRadius] = React.useState(0);
+  const [adaptiveThreshold, setAdaptiveThreshold] = React.useState(false);
+  const [smoothingTolerance, setSmoothingTolerance] = React.useState(0);
   const [invertRaster, setInvertRaster] = React.useState(false);
   const [travelSpeed, setTravelSpeed] = React.useState(profile.travelSpeed);
   const [drawingSpeed, setDrawingSpeed] = React.useState(profile.drawingSpeed);
@@ -575,15 +581,21 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     image.removeAttribute('src');
     URL.revokeObjectURL(objectUrl);
 
-    return traceRasterToPaths(imageData.data, width, height, {
+    const traced = traceRasterToPaths(imageData.data, width, height, {
       mode: rasterMode,
       threshold,
       xStep: 1,
-      yStep: rasterDetail === 'fine' || rasterDetail === 'ultra' ? 1 : 2,
+      yStep: rasterDetail === 'fine' || rasterDetail === 'ultra' || rasterDetail === 'max' || rasterMode === 'dither' ? 1 : 2,
       minRunLength: 2,
+      blurRadius,
+      brightness,
+      contrast,
+      adaptiveThreshold,
       canvasWidth: canvas.width,
       canvasHeight: canvas.height
     });
+
+    return smoothPaths(traced, smoothingTolerance);
   };
 
   const loadImage = (file: File): Promise<HTMLImageElement> => {
@@ -654,13 +666,15 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           <option value="outline">Outline</option>
           <option value="fill">Fill lines</option>
           <option value="centerline">Centerline</option>
+          <option value="dither">Dither</option>
         </select>
         <label htmlFor="raster-detail">Detail</label>
         <select id="raster-detail" value={rasterDetail} onChange={(event) => setRasterDetail(event.target.value as RasterDetail)}>
-          <option value="draft">Draft</option>
-          <option value="normal">Normal</option>
-          <option value="fine">Fine</option>
-          <option value="ultra">Ultra</option>
+          <option value="draft">Draft 320px</option>
+          <option value="normal">Normal 512px</option>
+          <option value="fine">Fine 1024px</option>
+          <option value="ultra">Ultra 1536px</option>
+          <option value="max">Max 2048px</option>
         </select>
         <label htmlFor="raster-threshold">Threshold</label>
         <input
@@ -672,6 +686,52 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           onChange={(event) => setThreshold(Number(event.target.value))}
         />
         <span>{threshold}</span>
+        <label htmlFor="raster-brightness">Brightness</label>
+        <input
+          id="raster-brightness"
+          type="range"
+          min="-100"
+          max="100"
+          value={brightness}
+          onChange={(event) => setBrightness(Number(event.target.value))}
+        />
+        <span>{brightness}</span>
+        <label htmlFor="raster-contrast">Contrast</label>
+        <input
+          id="raster-contrast"
+          type="range"
+          min="0"
+          max="250"
+          value={contrast}
+          onChange={(event) => setContrast(Number(event.target.value))}
+        />
+        <span>{contrast}%</span>
+        <label htmlFor="raster-blur">Blur</label>
+        <input
+          id="raster-blur"
+          type="range"
+          min="0"
+          max="6"
+          step="0.25"
+          value={blurRadius}
+          onChange={(event) => setBlurRadius(Number(event.target.value))}
+        />
+        <span>{blurRadius.toFixed(2)}</span>
+        <label htmlFor="raster-smoothing">Smooth</label>
+        <input
+          id="raster-smoothing"
+          type="range"
+          min="0"
+          max="2"
+          step="0.05"
+          value={smoothingTolerance}
+          onChange={(event) => setSmoothingTolerance(Number(event.target.value))}
+        />
+        <span>{smoothingTolerance.toFixed(2)}</span>
+        <label className="check-row">
+          <input type="checkbox" checked={adaptiveThreshold} onChange={(event) => setAdaptiveThreshold(event.target.checked)} />
+          Adaptive
+        </label>
         <label className="check-row">
           <input type="checkbox" checked={invertRaster} onChange={(event) => setInvertRaster(event.target.checked)} />
           Invert
