@@ -2,6 +2,17 @@
 
 An open, from-scratch controller for GRBL-based Bachin-style pen plotters, writing machines, and small laser/drawing machines.
 
+## Future Session Completion Rule
+
+Every task should end with a fresh user-testable Windows build:
+
+1. Bump the patch version with `npm.cmd version patch --no-git-tag-version`.
+2. Run `npm.cmd run lint`, `npm.cmd test -- --runInBand`, and `npm.cmd run build`.
+3. Run `npm.cmd run package` so the generated executable reflects the latest code.
+
+This keeps the Desktop/repo `.exe` path aligned with the newest changes for
+manual testing by double-clicking the app.
+
 ## Project Structure
 
 ```
@@ -114,7 +125,7 @@ npm run package
 - Bezier curve sampling to line segments
 - Bounding box computation
 - Coordinate normalization to machine work area (centered, aspect-ratio-preserving)
-- Raster image tracing (PNG / JPG → outline or fill-line paths)
+- Raster image tracing (PNG / JPG → outline, fill-line, or centerline paths)
 
 ### ✅ Phase 3 — G-code Generation
 - Pen plotter G-code synthesis with pen-up travel + pen-down draw
@@ -133,18 +144,20 @@ npm run package
 - Grid overlay toggle (5 mm minor / 10 mm major lines)
 - Image drag-to-move within the work area
 - Image resize via corner handle (maintains center)
-- Numeric X/Y offset and scale controls with live G-code regeneration
+- Image rotation via handle and numeric control
+- Numeric X/Y offset, scale, and rotation controls with live G-code regeneration
+- Per-job action speed controls for travel, drawing, and pen Z movement
 - Project save/load (JSON format, persistent across sessions)
 - Windows packaging via electron-forge (Squirrel installer + zip)
 
 **Remaining:**
 - Machine profile editor UI (Settings page shows units only)
-- Artwork rotation transform
 - End-to-end hardware re-validation with new positioning workflow
 
 ## Notes
 
 - The TA4 machine profile is confirmed and validated on hardware
 - Raster tracing is in the Phase 2 importer (`src/importers/raster/`)
-- Canvas transform (move/scale) regenerates G-code after each interaction; rotation is next
+- Canvas transform (move/scale/rotate) regenerates G-code after each interaction
+- Artwork speed controls regenerate G-code with job-specific travel, draw, and pen Z feed rates
 - Phase 5 features (DXF, text, QR, laser) are post-MVP

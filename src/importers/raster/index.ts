@@ -241,14 +241,18 @@ function skeletonToPaths(
       const pts: Array<{ x: number; y: number }> = [];
       let cx = startX;
       let cy = startY;
+      let tracing = true;
 
-      while (true) {
+      while (tracing) {
         visited[cy * width + cx] = 1;
         pts.push({ x: cx, y: cy });
         const nbrs = unvisitedNeighbors(cx, cy);
-        if (nbrs.length === 0) break;
-        cx = nbrs[0].x;
-        cy = nbrs[0].y;
+        if (nbrs.length === 0) {
+          tracing = false;
+        } else {
+          cx = nbrs[0].x;
+          cy = nbrs[0].y;
+        }
       }
 
       if (pts.length < 2) continue;

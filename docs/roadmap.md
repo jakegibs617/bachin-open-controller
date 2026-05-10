@@ -39,11 +39,12 @@
 - ✅ SVG and raster image (PNG/JPG) import.
 - ✅ Canvas work area preview with grid overlay.
 - ✅ Image drag-to-move and scale (corner handle + numeric controls).
+- ✅ Artwork rotation on canvas.
 - ✅ G-code regeneration on every transform change.
+- ✅ Per-job action speed controls for travel, drawing, and pen Z movement.
 - ✅ Save/load project files.
 - ✅ Basic Windows packaging (Squirrel installer).
 - ⏳ Machine profile editor UI.
-- ⏳ Artwork rotation on canvas.
 
 ## Phase 5: Feature Growth
 
@@ -54,4 +55,3 @@
 - Laser mode with PWM controls.
 - Multi-color pen prompts.
 - More machine presets.
-

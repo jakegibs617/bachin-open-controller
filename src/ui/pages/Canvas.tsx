@@ -13,7 +13,7 @@
 
 import React from 'react';
 import { BoundingBox, Canvas as CanvasModel, LengthUnit, MachineProfile, Path } from '../../types';
-import { formatLength } from '../../core/units';
+import { formatLength, fromMillimeters, toMillimeters, UNIT_LABELS } from '../../core/units';
 import { SVGParser, normalizePathToMachineCoordinates } from '../../importers/svg';
 import { traceRasterToPaths } from '../../importers/raster';
 import { GCodeGenerator } from '../../core/gcode';
@@ -52,7 +52,12 @@ const GRID_SPACING: Record<GridUnit, { minor: number; major: number }> = {
 };
 
 const ROTATE_HANDLE_DIST = 10; // mm from top edge to rotation handle
+const DEFAULT_PEN_SPEED = Number(ta4Profile.penDownCommand.match(/\bF(-?\d+(?:\.\d+)?)\b/i)?.[1] ?? ta4Profile.drawingSpeed);
 type DragMode = 'move' | 'resize' | 'rotate';
+
+function displayLengthInput(valueMm: number, units: LengthUnit, precision: number = 4): number {
+  return Number(fromMillimeters(valueMm, units).toFixed(precision));
+}
 
 interface DragState {
   mode: DragMode;
@@ -167,9 +172,12 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const [rasterDetail, setRasterDetail] = React.useState<RasterDetail>('normal');
   const [threshold, setThreshold] = React.useState(170);
   const [invertRaster, setInvertRaster] = React.useState(false);
+  const [travelSpeed, setTravelSpeed] = React.useState(profile.travelSpeed);
+  const [drawingSpeed, setDrawingSpeed] = React.useState(profile.drawingSpeed);
+  const [penSpeed, setPenSpeed] = React.useState(DEFAULT_PEN_SPEED);
 
-  const [showGrid, setShowGrid] = React.useState(false);
-  const [gridUnit, setGridUnit] = React.useState<GridUnit>('mm');
+  const [showGrid, setShowGrid] = React.useState(true);
+  const [gridUnit, setGridUnit] = React.useState<GridUnit>('cm');
   const [isDragging, setIsDragging] = React.useState(false);
 
   // rawPaths: paths normalized to canvas coordinates, before any user transform.
@@ -256,7 +264,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     rotateDeg: number
   ) => {
     const transformed = applyTransform(paths, cx, cy, scalePct, dx, dy, rotateDeg);
-    const generator = new GCodeGenerator(profile, canvas);
+    const generator = new GCodeGenerator(profile, canvas, { travelSpeed, drawingSpeed, penSpeed });
     const result = generator.generate(transformed);
     onPreparedJobChange({ name, paths: transformed, gcode: result.gcode, warnings: result.warnings });
     setMessage(`${name}: ${transformed.length} stroke${transformed.length === 1 ? '' : 's'}, ${result.gcode.length} G-code lines.`);
@@ -407,6 +415,27 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     applyTransformAndRegenerate(100, 0, 0, 0);
   };
 
+  const handleSpeedChange = (kind: 'travel' | 'drawing' | 'pen', value: number) => {
+    const nextValue = Math.max(1, Math.min(12000, Number.isFinite(value) ? value : 1));
+    if (kind === 'travel') {
+      setTravelSpeed(nextValue);
+    } else if (kind === 'drawing') {
+      setDrawingSpeed(nextValue);
+    } else {
+      setPenSpeed(nextValue);
+    }
+  };
+
+  React.useEffect(() => {
+    applyTransformAndRegenerate(imageScaleRef.current, offsetXRef.current, offsetYRef.current, rotationRef.current);
+  }, [travelSpeed, drawingSpeed, penSpeed]);
+
+  const handleResetSpeeds = () => {
+    setTravelSpeed(profile.travelSpeed);
+    setDrawingSpeed(profile.drawingSpeed);
+    setPenSpeed(DEFAULT_PEN_SPEED);
+  };
+
   // --- Import and clear ---
 
   const handleClear = () => {
@@ -437,7 +466,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       setImageScale(100);
       setRotation(0);
 
-      const generator = new GCodeGenerator(profile, canvas);
+      const generator = new GCodeGenerator(profile, canvas, { travelSpeed, drawingSpeed, penSpeed });
       const result = generator.generate(paths);
       onPreparedJobChange({
         name: file.name,
@@ -515,6 +544,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   };
 
   const dragMode = dragState.current?.mode;
+  const unitLabel = UNIT_LABELS[units];
+  const speedUnitLabel = `${unitLabel}/min`;
 
   return (
     <div className="canvas-page">
@@ -585,6 +616,48 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           <input type="checkbox" checked={invertRaster} onChange={(event) => setInvertRaster(event.target.checked)} />
           Invert
         </label>
+      </section>
+
+      <section className="action-speed-settings" aria-label="Action speed settings">
+        <label htmlFor="travel-speed">Travel</label>
+        <input
+          id="travel-speed"
+          type="number"
+          min={displayLengthInput(1, units)}
+          max={displayLengthInput(12000, units)}
+          step={displayLengthInput(100, units)}
+          value={displayLengthInput(travelSpeed, units)}
+          onChange={(event) => handleSpeedChange('travel', toMillimeters(Number(event.target.value), units))}
+        />
+        <span className="unit-label">{speedUnitLabel}</span>
+
+        <label htmlFor="drawing-speed">Draw</label>
+        <input
+          id="drawing-speed"
+          type="number"
+          min={displayLengthInput(1, units)}
+          max={displayLengthInput(12000, units)}
+          step={displayLengthInput(100, units)}
+          value={displayLengthInput(drawingSpeed, units)}
+          onChange={(event) => handleSpeedChange('drawing', toMillimeters(Number(event.target.value), units))}
+        />
+        <span className="unit-label">{speedUnitLabel}</span>
+
+        <label htmlFor="pen-speed">Pen Z</label>
+        <input
+          id="pen-speed"
+          type="number"
+          min={displayLengthInput(1, units)}
+          max={displayLengthInput(12000, units)}
+          step={displayLengthInput(100, units)}
+          value={displayLengthInput(penSpeed, units)}
+          onChange={(event) => handleSpeedChange('pen', toMillimeters(Number(event.target.value), units))}
+        />
+        <span className="unit-label">{speedUnitLabel}</span>
+
+        <button type="button" className="toolbar-btn" onClick={handleResetSpeeds}>
+          Reset speeds
+        </button>
       </section>
 
       <div className="work-area-preview svg-preview" aria-label="TA4 work area preview">
@@ -704,21 +777,21 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           <input
             id="img-offset-x"
             type="number"
-            step="1"
-            value={Math.round(offsetX * 10) / 10}
-            onChange={(e) => handleOffsetChange('x', Number(e.target.value))}
+            step={displayLengthInput(1, units)}
+            value={displayLengthInput(offsetX, units)}
+            onChange={(e) => handleOffsetChange('x', toMillimeters(Number(e.target.value), units))}
           />
-          <span className="unit-label">mm</span>
+          <span className="unit-label">{unitLabel}</span>
 
           <label htmlFor="img-offset-y">Y</label>
           <input
             id="img-offset-y"
             type="number"
-            step="1"
-            value={Math.round(offsetY * 10) / 10}
-            onChange={(e) => handleOffsetChange('y', Number(e.target.value))}
+            step={displayLengthInput(1, units)}
+            value={displayLengthInput(offsetY, units)}
+            onChange={(e) => handleOffsetChange('y', toMillimeters(Number(e.target.value), units))}
           />
-          <span className="unit-label">mm</span>
+          <span className="unit-label">{unitLabel}</span>
 
           <label htmlFor="img-scale-range">Scale</label>
           <input

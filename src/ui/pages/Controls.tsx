@@ -1,7 +1,23 @@
 import React from 'react';
+import { LengthUnit } from '../../types';
+import { formatLength, fromMillimeters, toMillimeters, UNIT_LABELS } from '../../core/units';
 import { PreparedJob } from '../App';
 
 type IpcResult<T = unknown> = { ok: true; data?: T } | { ok: false; error: string };
+
+function formatEta(progress: { sent: number; total: number }, startTime: number | null): string {
+  if (!startTime || progress.sent === 0) return '–';
+  const elapsed = (Date.now() - startTime) / 1000;
+  const rate = progress.sent / elapsed;
+  const etaSec = Math.round((progress.total - progress.sent) / rate);
+  if (!Number.isFinite(etaSec) || etaSec < 0) return '–';
+  const h = Math.floor(etaSec / 3600);
+  const m = Math.floor((etaSec % 3600) / 60);
+  const s = etaSec % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s remaining`;
+  if (m > 0) return `${m}m ${s}s remaining`;
+  return `${s}s remaining`;
+}
 
 interface SerialPortInfo {
   path: string;
@@ -39,9 +55,20 @@ interface ControlsProps {
   onConnectedChange: (connected: boolean) => void;
   preparedJob: PreparedJob | null;
   onClearPreparedJob: () => void;
+  units: LengthUnit;
 }
 
-export const Controls: React.FC<ControlsProps> = ({ connected, onConnectedChange, preparedJob, onClearPreparedJob }) => {
+function displayLengthInput(valueMm: number, units: LengthUnit, precision: number = 4): number {
+  return Number(fromMillimeters(valueMm, units).toFixed(precision));
+}
+
+export const Controls: React.FC<ControlsProps> = ({
+  connected,
+  onConnectedChange,
+  preparedJob,
+  onClearPreparedJob,
+  units
+}) => {
   const [ports, setPorts] = React.useState<SerialPortInfo[]>([]);
   const [selectedPort, setSelectedPort] = React.useState('');
   const [baudRate, setBaudRate] = React.useState(115200);
@@ -56,9 +83,15 @@ export const Controls: React.FC<ControlsProps> = ({ connected, onConnectedChange
   const [perimeterHeight, setPerimeterHeight] = React.useState(20);
   const [message, setMessage] = React.useState('Connect to a GRBL controller to enable pen control.');
   const [error, setError] = React.useState<string | null>(null);
+  const streamStartRef = React.useRef<number | null>(null);
+
+  React.useEffect(() => {
+    streamStartRef.current = streaming ? Date.now() : null;
+  }, [streaming]);
 
   const apiAvailable = Boolean(window.api?.serial);
   const jobRunDisabledReason = busy ? 'Wait for the current command to finish.' : '';
+  const unitLabel = UNIT_LABELS[units];
 
   const runAction = async (action: () => Promise<IpcResult>, successMessage: string): Promise<boolean> => {
     if (!window.api?.serial) {
@@ -132,7 +165,10 @@ export const Controls: React.FC<ControlsProps> = ({ connected, onConnectedChange
   };
 
   const jog = async (dx: number, dy: number) => {
-    const ok = await runAction(() => window.api!.serial.jog(dx, dy), `Jogged ${dx || 0}, ${dy || 0} mm.`);
+    const ok = await runAction(
+      () => window.api!.serial.jog(dx, dy),
+      `Jogged ${formatLength(dx || 0, units)}, ${formatLength(dy || 0, units)}.`
+    );
     if (ok) {
       setPenDown(false);
       setJogOffset((current) => ({
@@ -318,20 +354,20 @@ export const Controls: React.FC<ControlsProps> = ({ connected, onConnectedChange
       <div className="card">
         <div className="card-label">Jog</div>
         <dl className="jog-readout">
-          <div><dt>X offset</dt><dd>{jogOffset.x.toFixed(1)} mm</dd></div>
-          <div><dt>Y offset</dt><dd>{jogOffset.y.toFixed(1)} mm</dd></div>
+          <div><dt>X offset</dt><dd>{formatLength(jogOffset.x, units)}</dd></div>
+          <div><dt>Y offset</dt><dd>{formatLength(jogOffset.y, units)}</dd></div>
         </dl>
         <div className="field-row">
-          <label htmlFor="jog-step">Step (mm)</label>
+          <label htmlFor="jog-step">Step ({unitLabel})</label>
           <input
             id="jog-step"
             type="number"
-            min="0.1"
-            max="10"
-            step="0.1"
-            value={jogStep}
+            min={displayLengthInput(0.1, units)}
+            max={displayLengthInput(10, units)}
+            step={displayLengthInput(0.1, units)}
+            value={displayLengthInput(jogStep, units)}
             disabled={busy || streaming}
-            onChange={(e) => setJogStep(Number(e.target.value))}
+            onChange={(e) => setJogStep(toMillimeters(Number(e.target.value), units))}
           />
           <button type="button" disabled={busy || streaming} onClick={() => setJogOffset({ x: 0, y: 0 })}>
             Zero
@@ -383,7 +419,19 @@ export const Controls: React.FC<ControlsProps> = ({ connected, onConnectedChange
             </div>
             {jobRunDisabledReason && <p className="hint" style={{ marginTop: 8 }}>{jobRunDisabledReason}</p>}
             {progress && (
-              <p className="progress-label" style={{ marginTop: 8 }}>{progress.sent} / {progress.total} lines</p>
+              <div style={{ marginTop: 10 }}>
+                <div style={{ background: '#e5e7eb', borderRadius: 4, height: 8, overflow: 'hidden' }}>
+                  <div style={{
+                    background: '#2563eb',
+                    height: '100%',
+                    width: `${Math.min(100, Math.round((progress.sent / progress.total) * 100))}%`,
+                    transition: 'width 0.3s'
+                  }} />
+                </div>
+                <p className="progress-label" style={{ marginTop: 4 }}>
+                  {progress.sent} / {progress.total} lines · {formatEta(progress, streamStartRef.current)}
+                </p>
+              </div>
             )}
           </>
         ) : (
@@ -394,29 +442,33 @@ export const Controls: React.FC<ControlsProps> = ({ connected, onConnectedChange
       {/* ── Perimeter test ─────────────────────────────── */}
       <div className="card">
         <div className="card-label">Perimeter Test</div>
-        <p className="hint" style={{ marginBottom: 12 }}>Safe area is 180 mm right × 210 mm down from origin.</p>
+        <p className="hint" style={{ marginBottom: 12 }}>
+          Safe area is {formatLength(180, units)} right x {formatLength(210, units)} down from origin.
+        </p>
         <div className="field-row">
-          <label htmlFor="perimeter-width">Width (mm)</label>
+          <label htmlFor="perimeter-width">Width ({unitLabel})</label>
           <input
             id="perimeter-width"
             type="number"
-            min="10"
-            max="180"
-            value={perimeterWidth}
+            min={displayLengthInput(10, units)}
+            max={displayLengthInput(180, units)}
+            step={displayLengthInput(1, units)}
+            value={displayLengthInput(perimeterWidth, units)}
             disabled={streaming}
-            onChange={(e) => setPerimeterWidth(Number(e.target.value))}
+            onChange={(e) => setPerimeterWidth(toMillimeters(Number(e.target.value), units))}
           />
         </div>
         <div className="field-row">
-          <label htmlFor="perimeter-height">Height (mm)</label>
+          <label htmlFor="perimeter-height">Height ({unitLabel})</label>
           <input
             id="perimeter-height"
             type="number"
-            min="10"
-            max="210"
-            value={perimeterHeight}
+            min={displayLengthInput(10, units)}
+            max={displayLengthInput(210, units)}
+            step={displayLengthInput(1, units)}
+            value={displayLengthInput(perimeterHeight, units)}
             disabled={streaming}
-            onChange={(e) => setPerimeterHeight(Number(e.target.value))}
+            onChange={(e) => setPerimeterHeight(toMillimeters(Number(e.target.value), units))}
           />
         </div>
         <div className="field-row">

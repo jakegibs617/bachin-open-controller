@@ -21,6 +21,43 @@ function formatCoordinate(value: number): string {
   return Number(value.toFixed(3)).toString();
 }
 
+export interface GCodeSpeedOptions {
+  travelSpeed?: number;
+  drawingSpeed?: number;
+  penSpeed?: number;
+}
+
+function resolveSpeed(value: number | undefined, fallback: number): number {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+
+  return fallback;
+}
+
+function feedFromCommand(command: string): number | null {
+  const match = command.match(/\bF(-?\d+(?:\.\d+)?)\b/i);
+  if (!match) {
+    return null;
+  }
+
+  const feed = Number(match[1]);
+  return Number.isFinite(feed) && feed > 0 ? feed : null;
+}
+
+function commandWithFeed(command: string, feed: number | undefined): string {
+  if (!feed || !Number.isFinite(feed) || feed <= 0) {
+    return command;
+  }
+
+  const formattedFeed = formatCoordinate(feed);
+  if (/\bF-?\d+(?:\.\d+)?\b/i.test(command)) {
+    return command.replace(/\bF-?\d+(?:\.\d+)?\b/gi, `F${formattedFeed}`);
+  }
+
+  return `${command} F${formattedFeed}`;
+}
+
 export class GCodeGenerator {
   /**
    * Phase 3: Generates G-code from paths and machine profile
@@ -28,11 +65,20 @@ export class GCodeGenerator {
 
   private profile: MachineProfile;
   private canvas: Canvas;
+  private speeds: Required<GCodeSpeedOptions>;
   private warnings: JobWarning[] = [];
 
-  constructor(profile: MachineProfile, canvas: Canvas) {
+  constructor(profile: MachineProfile, canvas: Canvas, speedOptions: GCodeSpeedOptions = {}) {
     this.profile = profile;
     this.canvas = canvas;
+    this.speeds = {
+      travelSpeed: resolveSpeed(speedOptions.travelSpeed, profile.travelSpeed),
+      drawingSpeed: resolveSpeed(speedOptions.drawingSpeed, profile.drawingSpeed),
+      penSpeed: resolveSpeed(
+        speedOptions.penSpeed,
+        feedFromCommand(profile.penDownCommand) ?? feedFromCommand(profile.penUpCommand) ?? profile.drawingSpeed
+      )
+    };
   }
 
   generate(paths: Path[]): { gcode: string[]; warnings: JobWarning[] } {
@@ -89,17 +135,17 @@ export class GCodeGenerator {
       const [start, ...rest] = currentRun;
       const machineStart = this.toMachinePoint(start.x, start.y);
       gcode.push(
-        this.profile.penUpCommand,
-        `G0 X${formatCoordinate(machineStart.x)} Y${formatCoordinate(machineStart.y)} F${formatCoordinate(this.profile.travelSpeed)}`,
-        this.profile.penDownCommand
+        this.penUpCommand(),
+        `G0 X${formatCoordinate(machineStart.x)} Y${formatCoordinate(machineStart.y)} F${formatCoordinate(this.speeds.travelSpeed)}`,
+        this.penDownCommand()
       );
 
       for (const segment of rest) {
         const machinePoint = this.toMachinePoint(segment.x, segment.y);
-        gcode.push(`G1 X${formatCoordinate(machinePoint.x)} Y${formatCoordinate(machinePoint.y)} F${formatCoordinate(this.profile.drawingSpeed)}`);
+        gcode.push(`G1 X${formatCoordinate(machinePoint.x)} Y${formatCoordinate(machinePoint.y)} F${formatCoordinate(this.speeds.drawingSpeed)}`);
       }
 
-      gcode.push(this.profile.penUpCommand);
+      gcode.push(this.penUpCommand());
       currentRun = [];
     };
 
@@ -126,6 +172,14 @@ export class GCodeGenerator {
       x: x + this.canvas.offsetX,
       y: y + this.canvas.offsetY
     };
+  }
+
+  private penUpCommand(): string {
+    return commandWithFeed(this.profile.penUpCommand, this.speeds.penSpeed);
+  }
+
+  private penDownCommand(): string {
+    return commandWithFeed(this.profile.penDownCommand, this.speeds.penSpeed);
   }
 
   private validateBounds(paths: Path[]): void {

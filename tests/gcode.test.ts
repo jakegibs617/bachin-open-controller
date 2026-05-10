@@ -82,6 +82,20 @@ describe('GCodeGenerator', () => {
     expect(result.gcode).toContain('G0 X20 Y-20 F6000');
     expect(result.gcode.filter((line) => line === profile.penDownCommand)).toHaveLength(2);
   });
+
+  it('allows per-job action speed overrides', () => {
+    const generator = new GCodeGenerator(profile, canvas, {
+      travelSpeed: 8000,
+      drawingSpeed: 2200,
+      penSpeed: 3500
+    });
+    const result = generator.generate([path]);
+
+    expect(result.gcode).toContain('G1 Z0 F3500');
+    expect(result.gcode).toContain('G0 X10 Y-20 F8000');
+    expect(result.gcode).toContain('G1 Z8 F3500');
+    expect(result.gcode).toContain('G1 X20 Y-30 F2200');
+  });
 });
 
 describe('Safety Validation', () => {

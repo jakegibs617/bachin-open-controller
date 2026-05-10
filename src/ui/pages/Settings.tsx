@@ -2,7 +2,7 @@ import React from 'react';
 import { LengthUnit } from '../../types';
 import { UNIT_NAMES, formatLength } from '../../core/units';
 
-const UNIT_OPTIONS: LengthUnit[] = ['mm', 'cm', 'in', 'ft'];
+const UNIT_OPTIONS: LengthUnit[] = ['cm', 'mm', 'in', 'ft'];
 
 interface SettingsProps {
   units: LengthUnit;
