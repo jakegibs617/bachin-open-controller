@@ -169,8 +169,19 @@ ipcMain.handle('serial:disconnect', async () => {
 });
 
 ipcMain.handle('serial:sendJob', async (event, gcode: string[]) => {
-  // Phase 4: NOT YET IMPLEMENTED
-  return { error: 'Phase 4: Not yet implemented' };
+  return runSerialAction(async () => {
+    const controller = requireController();
+    if (!Array.isArray(gcode) || gcode.length === 0) {
+      throw new Error('Generated job has no G-code lines');
+    }
+    if (gcode.some((line) => typeof line !== 'string')) {
+      throw new Error('Generated job contains an invalid G-code line');
+    }
+
+    await controller.streamJob(gcode, (sent, total) => {
+      mainWindow.webContents.send('serial:progress', { sent, total });
+    }, { waitForIdle: true });
+  });
 });
 
 ipcMain.handle('serial:perimeterTest', async (event, width?: number, height?: number) => {

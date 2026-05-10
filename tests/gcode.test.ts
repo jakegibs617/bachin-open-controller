@@ -37,10 +37,10 @@ describe('GCodeGenerator', () => {
       'G21',
       'G90',
       'G1 Z0 F2000',
-      'G0 X10 Y20 F6000',
+      'G0 X10 Y-20 F6000',
       'G1 Z8 F2000',
-      'G1 X20 Y30 F1000',
-      'G1 X20.123 Y30.988 F1000',
+      'G1 X20 Y-30 F1000',
+      'G1 X20.123 Y-30.988 F1000',
       'G1 Z0 F2000',
       'G1 Z0 F2000',
       'M5'
@@ -58,10 +58,29 @@ describe('GCodeGenerator', () => {
       'Path empty has no segments',
       'Path outside X 211 exceeds bounds [0, 210]',
       'Path outside Y -1 exceeds bounds [0, 297]',
+      'Path outside canvas min X 211 exceeds bounds [0, 210]',
+      'Path outside canvas min Y -1 exceeds bounds [0, 297]',
       'Path outside canvas X 211 exceeds bounds [0, 210]',
       'Path outside canvas Y -1 exceeds bounds [0, 297]',
       'Path empty has no drawable segments'
     ]);
+  });
+
+  it('starts a new pen run when a path contains move segments', () => {
+    const generator = new GCodeGenerator(profile, canvas);
+    const result = generator.generate([{
+      id: 'two-lines',
+      segments: [
+        { x: 0, y: 0, penDown: false },
+        { x: 10, y: 0, penDown: true },
+        { x: 20, y: 20, penDown: false },
+        { x: 30, y: 20, penDown: true }
+      ],
+      bounds: { minX: 0, maxX: 30, minY: 0, maxY: 20 }
+    }]);
+
+    expect(result.gcode).toContain('G0 X20 Y-20 F6000');
+    expect(result.gcode.filter((line) => line === profile.penDownCommand)).toHaveLength(2);
   });
 });
 

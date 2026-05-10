@@ -89,7 +89,53 @@
     .settings-page,
     .canvas-page,
     .controls-page {
+      max-width: 920px;
+    }
+
+    .canvas-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .canvas-toolbar label {
+      font-weight: 600;
+    }
+
+    .canvas-toolbar input {
+      min-width: 280px;
+    }
+
+    .raster-settings {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      align-items: center;
       max-width: 720px;
+      margin-bottom: 16px;
+      padding: 10px 0;
+      border-top: 1px solid #d4dce0;
+      border-bottom: 1px solid #d4dce0;
+    }
+
+    .raster-settings label {
+      font-weight: 600;
+    }
+
+    .raster-settings select {
+      padding: 6px 8px;
+    }
+
+    .raster-settings input[type="range"] {
+      min-width: 160px;
+    }
+
+    .raster-settings .check-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
 
     .settings-section {
@@ -279,7 +325,7 @@
 
     .work-area-preview {
       width: min(100%, 360px);
-      aspect-ratio: 210 / 297;
+      aspect-ratio: 180 / 210;
       border: 2px solid #34495e;
       background: white;
       display: grid;
@@ -291,6 +337,66 @@
 
     .work-area-preview span {
       text-align: center;
+    }
+
+    .svg-preview {
+      width: min(100%, 520px);
+      place-content: stretch;
+      overflow: hidden;
+    }
+
+    .svg-preview svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .svg-preview rect {
+      fill: #fff;
+      stroke: #d4dce0;
+      stroke-width: 1;
+    }
+
+    .svg-preview polyline {
+      fill: none;
+      stroke: #1f7a4d;
+      stroke-width: 1.2;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .canvas-readout,
+    .job-readout {
+      margin-top: 12px;
+    }
+
+    .job-readout {
+      grid-template-columns: minmax(180px, 1fr) minmax(100px, 160px);
+      max-width: 560px;
+    }
+
+    .job-readout dd {
+      overflow-wrap: anywhere;
+    }
+
+    .warning-list {
+      max-width: 720px;
+      margin: 10px 0;
+      padding-left: 20px;
+      line-height: 1.4;
+    }
+
+    .warning-list .warn {
+      color: #8a5a00;
+    }
+
+    .warning-list .error {
+      color: #b3261e;
+      font-weight: 600;
+    }
+
+    .hint {
+      color: #5f6c72;
+      line-height: 1.4;
     }
   </style>
 </head>

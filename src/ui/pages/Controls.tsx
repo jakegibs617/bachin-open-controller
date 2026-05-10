@@ -17,6 +17,7 @@
  */
 
 import React from 'react';
+import { PreparedJob } from '../App';
 
 type IpcResult<T = unknown> = { ok: true; data?: T } | { ok: false; error: string };
 
@@ -36,6 +37,7 @@ interface ElectronApi {
     returnToOrigin: () => Promise<IpcResult<string[]>>;
     jog: (dx: number, dy: number) => Promise<IpcResult<string[]>>;
     perimeterTest: (width: number, height: number) => Promise<IpcResult>;
+    sendJob: (gcode: string[]) => Promise<IpcResult>;
     cancel: () => Promise<IpcResult>;
     onProgress: (callback: (data: { sent: number; total: number }) => void) => () => void;
   };
@@ -47,7 +49,12 @@ declare global {
   }
 }
 
-export const Controls: React.FC = () => {
+interface ControlsProps {
+  preparedJob: PreparedJob | null;
+  onClearPreparedJob: () => void;
+}
+
+export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPreparedJob }) => {
   const [ports, setPorts] = React.useState<SerialPortInfo[]>([]);
   const [selectedPort, setSelectedPort] = React.useState('');
   const [baudRate, setBaudRate] = React.useState(115200);
@@ -192,6 +199,35 @@ export const Controls: React.FC = () => {
         setMessage('Perimeter test failed.');
       } else {
         setMessage('Perimeter test complete.');
+      }
+    } finally {
+      setStreaming(false);
+      setProgress(null);
+    }
+  };
+
+  const runPreparedJob = async () => {
+    if (!preparedJob) {
+      setError('No generated job is ready.');
+      return;
+    }
+    if (!window.api?.serial) {
+      setError('Electron serial bridge is not available.');
+      return;
+    }
+
+    setStreaming(true);
+    setProgress(null);
+    setError(null);
+    setMessage(`Running ${preparedJob.name}...`);
+    try {
+      const result = await window.api.serial.sendJob(preparedJob.gcode);
+      if (!result.ok) {
+        setError(result.error);
+        setMessage('SVG job failed.');
+      } else {
+        setMessage('SVG job complete.');
+        setPenDown(false);
       }
     } finally {
       setStreaming(false);
@@ -349,6 +385,47 @@ export const Controls: React.FC = () => {
             Down
           </button>
         </div>
+      </section>
+
+      <section className="control-section">
+        <h3>Prepared SVG Job</h3>
+        {preparedJob ? (
+          <>
+            <dl className="job-readout">
+              <div>
+                <dt>File</dt>
+                <dd>{preparedJob.name}</dd>
+              </div>
+              <div>
+                <dt>Lines</dt>
+                <dd>{preparedJob.gcode.length}</dd>
+              </div>
+            </dl>
+            {preparedJob.warnings.length > 0 && (
+              <ul className="warning-list">
+                {preparedJob.warnings.map((warning, index) => (
+                  <li key={`${warning.message}-${index}`} className={warning.severity}>
+                    {warning.message}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="field-row">
+              {streaming ? (
+                <button type="button" onClick={cancelJob}>Cancel</button>
+              ) : (
+                <button type="button" disabled={!connected || busy} onClick={runPreparedJob}>
+                  Run SVG Job
+                </button>
+              )}
+              <button type="button" disabled={streaming} onClick={onClearPreparedJob}>
+                Clear Job
+              </button>
+            </div>
+          </>
+        ) : (
+          <p className="hint">Import an SVG on the Canvas tab to prepare a job.</p>
+        )}
       </section>
 
       <section className="control-section">

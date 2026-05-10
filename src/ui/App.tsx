@@ -1,14 +1,22 @@
 import React from 'react';
-import { LengthUnit } from '../types';
+import { JobWarning, LengthUnit, Path } from '../types';
 import { Controls } from './pages/Controls';
 import { Canvas } from './pages/Canvas';
 import { Settings } from './pages/Settings';
 
 type Page = 'controls' | 'canvas' | 'settings';
 
+export interface PreparedJob {
+  name: string;
+  paths: Path[];
+  gcode: string[];
+  warnings: JobWarning[];
+}
+
 export const App: React.FC = () => {
   const [page, setPage] = React.useState<Page>('controls');
   const [units, setUnits] = React.useState<LengthUnit>('mm');
+  const [preparedJob, setPreparedJob] = React.useState<PreparedJob | null>(null);
 
   return (
     <div className="app">
@@ -28,8 +36,8 @@ export const App: React.FC = () => {
         </nav>
       </header>
       <main className="app-main">
-        {page === 'controls' && <Controls />}
-        {page === 'canvas' && <Canvas units={units} />}
+        {page === 'controls' && <Controls preparedJob={preparedJob} onClearPreparedJob={() => setPreparedJob(null)} />}
+        {page === 'canvas' && <Canvas units={units} preparedJob={preparedJob} onPreparedJobChange={setPreparedJob} />}
         {page === 'settings' && <Settings units={units} onUnitsChange={setUnits} />}
       </main>
     </div>

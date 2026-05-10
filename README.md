@@ -35,5 +35,8 @@ behavior, user-provided machine settings, and original application code.
 
 ## Current Status
 
-Planning-only repository. No runtime code has been implemented yet.
-
+Early prototype. The project now has a working Electron shell, TA4-oriented
+serial controls, basic GRBL command streaming, geometry helpers, simple SVG path
+import, and G-code generation with bounds warnings. Hardware-specific behavior
+is still intentionally conservative and should be tested on a connected machine
+before running real jobs.

@@ -78,19 +78,54 @@ export class GCodeGenerator {
       return [];
     }
 
-    const [start, ...rest] = drawableSegments;
-    const gcode: string[] = [
-      this.profile.penUpCommand,
-      `G0 X${formatCoordinate(start.x)} Y${formatCoordinate(start.y)} F${formatCoordinate(this.profile.travelSpeed)}`,
-      this.profile.penDownCommand
-    ];
+    const gcode: string[] = [];
+    let currentRun: typeof drawableSegments = [];
 
-    for (const segment of rest) {
-      gcode.push(`G1 X${formatCoordinate(segment.x)} Y${formatCoordinate(segment.y)} F${formatCoordinate(this.profile.drawingSpeed)}`);
+    const flushRun = () => {
+      if (currentRun.length === 0) {
+        return;
+      }
+
+      const [start, ...rest] = currentRun;
+      const machineStart = this.toMachinePoint(start.x, start.y);
+      gcode.push(
+        this.profile.penUpCommand,
+        `G0 X${formatCoordinate(machineStart.x)} Y${formatCoordinate(machineStart.y)} F${formatCoordinate(this.profile.travelSpeed)}`,
+        this.profile.penDownCommand
+      );
+
+      for (const segment of rest) {
+        const machinePoint = this.toMachinePoint(segment.x, segment.y);
+        gcode.push(`G1 X${formatCoordinate(machinePoint.x)} Y${formatCoordinate(machinePoint.y)} F${formatCoordinate(this.profile.drawingSpeed)}`);
+      }
+
+      gcode.push(this.profile.penUpCommand);
+      currentRun = [];
+    };
+
+    for (const segment of drawableSegments) {
+      if (segment.penDown === false && currentRun.length > 0) {
+        flushRun();
+      }
+      currentRun.push(segment);
+    }
+    flushRun();
+
+    return gcode;
+  }
+
+  private toMachinePoint(x: number, y: number): { x: number; y: number } {
+    if (this.profile.origin === 'top-left') {
+      return {
+        x: x + this.canvas.offsetX,
+        y: -(y + this.canvas.offsetY)
+      };
     }
 
-    gcode.push(this.profile.penUpCommand);
-    return gcode;
+    return {
+      x: x + this.canvas.offsetX,
+      y: y + this.canvas.offsetY
+    };
   }
 
   private validateBounds(paths: Path[]): void {
@@ -110,6 +145,8 @@ export class GCodeGenerator {
         this.collectCoordinateWarning(validateCoordinates(segment.y, 0, this.profile.workArea.y, `Path ${path.id} Y`));
       }
 
+      this.collectCoordinateWarning(validateCoordinates(path.bounds.minX, 0, this.canvas.width, `Path ${path.id} canvas min X`));
+      this.collectCoordinateWarning(validateCoordinates(path.bounds.minY, 0, this.canvas.height, `Path ${path.id} canvas min Y`));
       this.collectCoordinateWarning(validateCoordinates(path.bounds.maxX, 0, this.canvas.width, `Path ${path.id} canvas X`));
       this.collectCoordinateWarning(validateCoordinates(path.bounds.maxY, 0, this.canvas.height, `Path ${path.id} canvas Y`));
     }
