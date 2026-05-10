@@ -38,7 +38,10 @@ interface ElectronApi {
     jog: (dx: number, dy: number) => Promise<IpcResult<string[]>>;
     perimeterTest: (width: number, height: number) => Promise<IpcResult>;
     sendJob: (gcode: string[]) => Promise<IpcResult>;
+    pause: () => Promise<IpcResult>;
+    resume: () => Promise<IpcResult>;
     cancel: () => Promise<IpcResult>;
+    cancelAndReturnToOrigin: () => Promise<IpcResult<string[]>>;
     onProgress: (callback: (data: { sent: number; total: number }) => void) => () => void;
   };
 }
@@ -50,18 +53,20 @@ declare global {
 }
 
 interface ControlsProps {
+  connected: boolean;
+  onConnectedChange: (connected: boolean) => void;
   preparedJob: PreparedJob | null;
   onClearPreparedJob: () => void;
 }
 
-export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPreparedJob }) => {
+export const Controls: React.FC<ControlsProps> = ({ connected, onConnectedChange, preparedJob, onClearPreparedJob }) => {
   const [ports, setPorts] = React.useState<SerialPortInfo[]>([]);
   const [selectedPort, setSelectedPort] = React.useState('');
   const [baudRate, setBaudRate] = React.useState(115200);
-  const [connected, setConnected] = React.useState(false);
   const [penDown, setPenDown] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [streaming, setStreaming] = React.useState(false);
+  const [paused, setPaused] = React.useState(false);
   const [progress, setProgress] = React.useState<{ sent: number; total: number } | null>(null);
   const [jogStep, setJogStep] = React.useState(1);
   const [jogOffset, setJogOffset] = React.useState({ x: 0, y: 0 });
@@ -71,6 +76,9 @@ export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPrepared
   const [error, setError] = React.useState<string | null>(null);
 
   const apiAvailable = Boolean(window.api?.serial);
+  const jobRunDisabledReason = busy
+      ? 'Wait for the current command to finish.'
+      : '';
 
   const runAction = async (action: () => Promise<IpcResult>, successMessage: string): Promise<boolean> => {
     if (!window.api?.serial) {
@@ -130,16 +138,18 @@ export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPrepared
       `Connected to ${selectedPort}.`
     );
     if (ok) {
-      setConnected(true);
+      onConnectedChange(true);
       setPenDown(false);
+      setPaused(false);
     }
   };
 
   const disconnect = async () => {
     const ok = await runAction(() => window.api!.serial.disconnect(), 'Disconnected.');
     if (ok) {
-      setConnected(false);
+      onConnectedChange(false);
       setPenDown(false);
+      setPaused(false);
     }
   };
 
@@ -165,6 +175,7 @@ export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPrepared
     if (ok) {
       setPenDown(false);
       setStreaming(false);
+      setPaused(false);
       setProgress(null);
       setJogOffset({ x: 0, y: 0 });
     }
@@ -189,6 +200,7 @@ export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPrepared
       return;
     }
     setStreaming(true);
+    setPaused(false);
     setProgress(null);
     setError(null);
     setMessage('Running perimeter test...');
@@ -202,6 +214,7 @@ export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPrepared
       }
     } finally {
       setStreaming(false);
+      setPaused(false);
       setProgress(null);
     }
   };
@@ -217,6 +230,7 @@ export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPrepared
     }
 
     setStreaming(true);
+    setPaused(false);
     setProgress(null);
     setError(null);
     setMessage(`Running ${preparedJob.name}...`);
@@ -231,8 +245,47 @@ export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPrepared
       }
     } finally {
       setStreaming(false);
+      setPaused(false);
       setProgress(null);
     }
+  };
+
+  const pauseJob = async () => {
+    if (!window.api?.serial) {
+      setError('Electron serial bridge is not available.');
+      return;
+    }
+
+    setError(null);
+    setMessage('Pausing...');
+    const result = await window.api.serial.pause();
+    if (!result.ok) {
+      setError(result.error);
+      setMessage('Pause failed.');
+      return;
+    }
+
+    setPaused(true);
+    setMessage('Paused.');
+  };
+
+  const resumeJob = async () => {
+    if (!window.api?.serial) {
+      setError('Electron serial bridge is not available.');
+      return;
+    }
+
+    setError(null);
+    setMessage('Resuming...');
+    const result = await window.api.serial.resume();
+    if (!result.ok) {
+      setError(result.error);
+      setMessage('Resume failed.');
+      return;
+    }
+
+    setPaused(false);
+    setMessage('Running...');
   };
 
   const cancelJob = async () => {
@@ -240,7 +293,32 @@ export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPrepared
     const result = await window.api?.serial.cancel();
     if (result && !result.ok) {
       setError(result.error);
+      return;
     }
+    setPaused(false);
+  };
+
+  const cancelAndReturnToOrigin = async () => {
+    if (!window.api?.serial) {
+      setError('Electron serial bridge is not available.');
+      return;
+    }
+
+    setError(null);
+    setMessage('Cancelling and returning to origin...');
+    const result = await window.api.serial.cancelAndReturnToOrigin();
+    if (!result.ok) {
+      setError(result.error);
+      setMessage('Cancel and return failed.');
+      return;
+    }
+
+    setPenDown(false);
+    setStreaming(false);
+    setPaused(false);
+    setProgress(null);
+    setJogOffset({ x: 0, y: 0 });
+    setMessage('Cancelled and returned to origin.');
   };
 
   const stopMachine = async () => {
@@ -261,6 +339,7 @@ export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPrepared
       }
       setPenDown(false);
       setStreaming(false);
+      setPaused(false);
       setProgress(null);
       setMessage('Stopped.');
     } finally {
@@ -412,16 +491,25 @@ export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPrepared
             )}
             <div className="field-row">
               {streaming ? (
-                <button type="button" onClick={cancelJob}>Cancel</button>
+                <>
+                  {paused ? (
+                    <button type="button" onClick={resumeJob}>Resume</button>
+                  ) : (
+                    <button type="button" onClick={pauseJob}>Pause</button>
+                  )}
+                  <button type="button" onClick={cancelJob}>Cancel</button>
+                  <button type="button" onClick={cancelAndReturnToOrigin}>Cancel + Origin</button>
+                </>
               ) : (
-                <button type="button" disabled={!connected || busy} onClick={runPreparedJob}>
-                  Run SVG Job
+                <button type="button" disabled={busy} onClick={runPreparedJob}>
+                  Run Artwork Job
                 </button>
               )}
               <button type="button" disabled={streaming} onClick={onClearPreparedJob}>
                 Clear Job
               </button>
             </div>
+            {jobRunDisabledReason && <p className="hint">{jobRunDisabledReason}</p>}
           </>
         ) : (
           <p className="hint">Import an SVG on the Canvas tab to prepare a job.</p>
@@ -457,7 +545,15 @@ export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPrepared
         </div>
         <div className="field-row">
           {streaming ? (
-            <button type="button" onClick={cancelJob}>Cancel</button>
+            <>
+              {paused ? (
+                <button type="button" onClick={resumeJob}>Resume</button>
+              ) : (
+                <button type="button" onClick={pauseJob}>Pause</button>
+              )}
+              <button type="button" onClick={cancelJob}>Cancel</button>
+              <button type="button" onClick={cancelAndReturnToOrigin}>Cancel + Origin</button>
+            </>
           ) : (
             <button type="button" disabled={!connected || busy} onClick={runPerimeterTest}>
               Run Perimeter Test
@@ -469,7 +565,7 @@ export const Controls: React.FC<ControlsProps> = ({ preparedJob, onClearPrepared
         </div>
       </section>
 
-      <p className="status-message">{busy || streaming ? 'Working...' : message}</p>
+      <p className="status-message">{paused ? 'Paused.' : busy || streaming ? 'Working...' : message}</p>
       {error && <p className="error-message">{error}</p>}
     </div>
   );

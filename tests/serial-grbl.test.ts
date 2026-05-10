@@ -18,12 +18,38 @@ class FakeTransport extends EventEmitter implements SerialTransport {
     this.writes.push(data);
     const text = Buffer.isBuffer(data) ? data.toString('utf8') : data;
 
+    if (text === '!' || text === '~' || Buffer.isBuffer(data)) {
+      return;
+    }
+
     if (text === '?') {
       setTimeout(() => this.emit('line', '<Idle|MPos:1.000,2.000,0.000|FS:0,0>'), 0);
       return;
     }
 
     setTimeout(() => this.emit('line', 'ok'), 0);
+  }
+
+  isOpen(): boolean {
+    return this.openState;
+  }
+}
+
+class ManualTransport extends EventEmitter implements SerialTransport {
+  private openState = false;
+  public writes: Array<string | Buffer> = [];
+
+  async open(): Promise<void> {
+    this.openState = true;
+  }
+
+  async close(): Promise<void> {
+    this.openState = false;
+    this.emit('close');
+  }
+
+  async write(data: string | Buffer): Promise<void> {
+    this.writes.push(data);
   }
 
   isOpen(): boolean {
@@ -73,5 +99,25 @@ describe('GRBLController', () => {
 
     const resetWrite = fake.writes.find((write) => Buffer.isBuffer(write));
     expect(resetWrite).toEqual(Buffer.from([0x18]));
+  });
+
+  it('uses GRBL realtime feed hold and cycle start for pause and resume', async () => {
+    const fake = new ManualTransport();
+    const controller = new GRBLController(() => fake);
+
+    await controller.openPort('FAKE', 115200);
+    const job = controller.streamJob(['G1 X1']);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await controller.pause();
+    expect(controller.isJobPaused()).toBe(true);
+    expect(fake.writes).toContain('!');
+
+    await controller.resume();
+    expect(controller.isJobPaused()).toBe(false);
+    expect(fake.writes).toContain('~');
+
+    fake.emit('line', 'ok');
+    await expect(job).resolves.toBeUndefined();
   });
 });

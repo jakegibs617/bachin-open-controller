@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('api', {
     pause: () => ipcRenderer.invoke('serial:pause'),
     resume: () => ipcRenderer.invoke('serial:resume'),
     cancel: () => ipcRenderer.invoke('serial:cancel'),
+    cancelAndReturnToOrigin: () => ipcRenderer.invoke('serial:cancelAndReturnToOrigin'),
     onProgress: (callback: (progress: any) => void) => {
       const listener = (event: Electron.IpcRendererEvent, data: any) => callback(data);
       ipcRenderer.on('serial:progress', listener);

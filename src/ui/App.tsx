@@ -17,6 +17,7 @@ export const App: React.FC = () => {
   const [page, setPage] = React.useState<Page>('controls');
   const [units, setUnits] = React.useState<LengthUnit>('mm');
   const [preparedJob, setPreparedJob] = React.useState<PreparedJob | null>(null);
+  const [serialConnected, setSerialConnected] = React.useState(false);
 
   return (
     <div className="app">
@@ -36,7 +37,14 @@ export const App: React.FC = () => {
         </nav>
       </header>
       <main className="app-main">
-        {page === 'controls' && <Controls preparedJob={preparedJob} onClearPreparedJob={() => setPreparedJob(null)} />}
+        {page === 'controls' && (
+          <Controls
+            connected={serialConnected}
+            onConnectedChange={setSerialConnected}
+            preparedJob={preparedJob}
+            onClearPreparedJob={() => setPreparedJob(null)}
+          />
+        )}
         {page === 'canvas' && <Canvas units={units} preparedJob={preparedJob} onPreparedJobChange={setPreparedJob} />}
         {page === 'settings' && <Settings units={units} onUnitsChange={setUnits} />}
       </main>

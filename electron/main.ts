@@ -96,6 +96,10 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function recoverFromSoftReset(controller: GRBLController): Promise<void> {
+  await controller.wakeAfterReset(2000);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -208,6 +212,17 @@ async function sendCommandSequence(controller: GRBLController, commands: string[
   return responses;
 }
 
+async function returnControllerToOrigin(controller: GRBLController): Promise<string[]> {
+  return sendCommandSequence(controller, [
+    '$X',
+    'G21',
+    'G90',
+    holdCurrentCommand,
+    machineProfile.penUpCommand,
+    `G0 X0 Y0 F${machineProfile.travelSpeed}`
+  ]);
+}
+
 function createWindow() {
   // Phase 4: Create main application window
   mainWindow = new BrowserWindow({
@@ -309,14 +324,9 @@ ipcMain.handle('serial:returnToOrigin', async () => {
     if (controller.isJobStreaming()) {
       await controller.cancel();
       await waitForStreamingToStop(controller);
-      await delay(2000);
+      await recoverFromSoftReset(controller);
     }
-    return sendCommandSequence(controller, [
-      '$X',
-      holdCurrentCommand,
-      machineProfile.penUpCommand,
-      `G1 X0 Y0 F${machineProfile.drawingSpeed}`
-    ]);
+    return returnControllerToOrigin(controller);
   });
 });
 
@@ -348,13 +358,15 @@ ipcMain.handle('serial:jog', async (_event, dx?: number, dy?: number) => {
 });
 
 ipcMain.handle('serial:pause', async (_event) => {
-  // Phase 4: NOT YET IMPLEMENTED
-  return { error: 'Phase 4: Not yet implemented' };
+  return runSerialAction(async () => {
+    await requireController().pause();
+  });
 });
 
 ipcMain.handle('serial:resume', async (_event) => {
-  // Phase 4: NOT YET IMPLEMENTED
-  return { error: 'Phase 4: Not yet implemented' };
+  return runSerialAction(async () => {
+    await requireController().resume();
+  });
 });
 
 ipcMain.handle('serial:cancel', async () => {
@@ -362,6 +374,18 @@ ipcMain.handle('serial:cancel', async () => {
     if (grblController) {
       await grblController.cancel();
     }
+  });
+});
+
+ipcMain.handle('serial:cancelAndReturnToOrigin', async () => {
+  return runSerialAction(async () => {
+    const controller = requireController();
+    if (controller.isJobStreaming()) {
+      await controller.cancel();
+      await waitForStreamingToStop(controller);
+      await recoverFromSoftReset(controller);
+    }
+    return returnControllerToOrigin(controller);
   });
 });
 

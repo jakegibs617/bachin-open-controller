@@ -131,6 +131,7 @@ export class GRBLController extends EventEmitter {
   private readonly transportFactory: SerialTransportFactory;
   private isStreaming = false;
   private streamingCancelled = false;
+  private streamingPaused = false;
 
   constructor(transportFactory: SerialTransportFactory = (portName, baudRate) => new NodeSerialTransport(portName, baudRate)) {
     super();
@@ -196,18 +197,25 @@ export class GRBLController extends EventEmitter {
     return statusPromise;
   }
 
+  async writeRealtime(data: string | Buffer): Promise<void> {
+    const transport = this.requireTransport();
+    await transport.write(data);
+  }
+
   async streamJob(lines: string[], onProgress?: (sent: number, total: number) => void, options: { waitForIdle?: boolean } = {}): Promise<void> {
     if (this.isStreaming) {
       throw new Error('A job is already streaming');
     }
     this.isStreaming = true;
     this.streamingCancelled = false;
+    this.streamingPaused = false;
     const effective = lines.filter((l) => { const t = l.trim(); return t && !t.startsWith(';'); });
     try {
       for (let i = 0; i < effective.length; i++) {
         if (this.streamingCancelled) {
           throw new Error('Job cancelled');
         }
+        await this.waitWhilePaused();
         const response = await this.sendCommand(effective[i]);
         if (response.type !== 'ok') {
           throw new Error(`GRBL error on line ${i + 1}: ${response.message}`);
@@ -221,11 +229,16 @@ export class GRBLController extends EventEmitter {
     } finally {
       this.isStreaming = false;
       this.streamingCancelled = false;
+      this.streamingPaused = false;
     }
   }
 
   isJobStreaming(): boolean {
     return this.isStreaming;
+  }
+
+  isJobPaused(): boolean {
+    return this.streamingPaused;
   }
 
   async waitUntilIdle(timeoutMs: number = 30000): Promise<void> {
@@ -234,6 +247,7 @@ export class GRBLController extends EventEmitter {
       if (this.streamingCancelled) {
         throw new Error('Job cancelled');
       }
+      await this.waitWhilePaused();
       const status = await this.queryStatus();
       if (status.state === 'idle') {
         return;
@@ -247,17 +261,36 @@ export class GRBLController extends EventEmitter {
   }
 
   async pause(): Promise<void> {
-    // Phase 1: Not yet implemented — requires streaming pause flag
-    throw new Error('Phase 1: Not yet implemented');
+    const transport = this.requireTransport();
+    if (!this.isStreaming) {
+      throw new Error('No active job to pause');
+    }
+    if (this.streamingPaused) {
+      return;
+    }
+
+    this.streamingPaused = true;
+    await transport.write('!');
+    this.emit('paused');
   }
 
   async resume(): Promise<void> {
-    // Phase 1: Not yet implemented — requires streaming pause flag
-    throw new Error('Phase 1: Not yet implemented');
+    const transport = this.requireTransport();
+    if (!this.isStreaming) {
+      throw new Error('No active job to resume');
+    }
+    if (!this.streamingPaused) {
+      return;
+    }
+
+    await transport.write('~');
+    this.streamingPaused = false;
+    this.emit('resumed');
   }
 
   async cancel(): Promise<void> {
     this.streamingCancelled = true;
+    this.streamingPaused = false;
     if (!this.transport || !this.transport.isOpen()) {
       return;
     }
@@ -276,6 +309,13 @@ export class GRBLController extends EventEmitter {
     await this.transport.write(Buffer.from([0x18]));
   }
 
+  async wakeAfterReset(delayMs: number = 2000): Promise<void> {
+    const transport = this.requireTransport();
+    await delay(delayMs);
+    await transport.write('\r\n');
+    await delay(250);
+  }
+
   isPortConnected(): boolean {
     return this.isConnected;
   }
@@ -286,6 +326,15 @@ export class GRBLController extends EventEmitter {
     }
 
     return this.transport;
+  }
+
+  private async waitWhilePaused(): Promise<void> {
+    while (this.streamingPaused) {
+      if (this.streamingCancelled) {
+        throw new Error('Job cancelled');
+      }
+      await delay(100);
+    }
   }
 
   private handleLine(line: string): void {
