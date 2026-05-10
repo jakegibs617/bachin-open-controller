@@ -15,7 +15,7 @@
  * - Create comprehensive test coverage
  */
 
-import { Point, BoundingBox as BoundingBoxInterface, Path, PathSegment, Transform as TransformInterface } from '../../types';
+import { Point, BoundingBox as BoundingBoxInterface, PathSegment, Transform as TransformInterface } from '../../types';
 
 export class Transform {
   /**

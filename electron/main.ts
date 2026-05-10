@@ -16,10 +16,11 @@
  */
 
 import { app, BrowserWindow, ipcMain } from 'electron';
+import * as fs from 'fs/promises';
 import * as path from 'path';
 import { GRBLController, listSerialPorts } from '../src/core/serial-grbl';
 import ta4Profile from '../profiles/ta4.json';
-import { MachineProfile } from '../src/types';
+import { MachineProfile, Project } from '../src/types';
 
 let mainWindow: BrowserWindow;
 let grblController: GRBLController | undefined;
@@ -28,6 +29,10 @@ const holdCurrentCommand = '$1=255';
 const idleReleaseCommand = '$1=250';
 
 type IpcResult<T = unknown> = { ok: true; data?: T } | { ok: false; error: string };
+
+interface SavedProject extends Project {
+  filePath?: string;
+}
 
 async function runSerialAction<T>(action: () => Promise<T>): Promise<IpcResult<T>> {
   try {
@@ -91,6 +96,94 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validateMachineProfile(value: unknown): MachineProfile {
+  if (!isRecord(value)) {
+    throw new Error('Machine profile must be an object');
+  }
+
+  const requiredStrings = ['id', 'name', 'machineKind', 'origin', 'penUpCommand', 'penDownCommand'];
+  for (const field of requiredStrings) {
+    if (typeof value[field] !== 'string' || value[field] === '') {
+      throw new Error(`Machine profile missing ${field}`);
+    }
+  }
+
+  if (!isRecord(value.workArea) || typeof value.workArea.x !== 'number' || typeof value.workArea.y !== 'number') {
+    throw new Error('Machine profile missing workArea dimensions');
+  }
+  if (typeof value.baudRate !== 'number' || typeof value.travelSpeed !== 'number' || typeof value.drawingSpeed !== 'number') {
+    throw new Error('Machine profile missing speed or baud-rate values');
+  }
+  if (!Array.isArray(value.safeStartupSequence) || !Array.isArray(value.safeShutdownSequence)) {
+    throw new Error('Machine profile missing safe command sequences');
+  }
+
+  return value as unknown as MachineProfile;
+}
+
+function validateProject(value: unknown): SavedProject {
+  if (!isRecord(value)) {
+    throw new Error('Project file must contain a JSON object');
+  }
+
+  const requiredStrings = ['id', 'name', 'created', 'machineProfileId', 'units', 'savedAt'];
+  for (const field of requiredStrings) {
+    if (typeof value[field] !== 'string' || value[field] === '') {
+      throw new Error(`Project missing ${field}`);
+    }
+  }
+
+  if (!isRecord(value.canvas)) {
+    throw new Error('Project missing canvas');
+  }
+  for (const field of ['width', 'height', 'offsetX', 'offsetY']) {
+    if (typeof value.canvas[field] !== 'number') {
+      throw new Error(`Project canvas missing ${field}`);
+    }
+  }
+  if (!Array.isArray(value.objects)) {
+    throw new Error('Project missing objects array');
+  }
+
+  return value as unknown as SavedProject;
+}
+
+function safeProjectFileName(project: SavedProject): string {
+  const baseName = project.name || project.id || 'project';
+  const safeName = baseName.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'project';
+  return `${safeName}.boc.json`;
+}
+
+async function defaultProjectPath(project: SavedProject): Promise<string> {
+  const projectDir = path.join(app.getPath('userData'), 'projects');
+  await fs.mkdir(projectDir, { recursive: true });
+  return path.join(projectDir, safeProjectFileName(project));
+}
+
+function profilesDirectory(): string {
+  return path.join(app.getAppPath(), 'profiles');
+}
+
+async function readProfileFile(filePath: string): Promise<MachineProfile> {
+  const profile = JSON.parse(await fs.readFile(filePath, 'utf8'));
+  return validateMachineProfile(profile);
+}
+
+async function loadProfiles(): Promise<MachineProfile[]> {
+  const directory = profilesDirectory();
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const profileFiles = entries
+    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.json'))
+    .map((entry) => path.join(directory, entry.name));
+
+  const profiles = await Promise.all(profileFiles.map(readProfileFile));
+  return profiles.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 async function waitForStreamingToStop(controller: GRBLController, timeoutMs: number = 3000): Promise<void> {
   const startedAt = Date.now();
   while (controller.isJobStreaming()) {
@@ -148,7 +241,7 @@ ipcMain.handle('serial:listPorts', async () => {
   return runSerialAction(() => listSerialPorts());
 });
 
-ipcMain.handle('serial:connect', async (event, port: string, baudRate: number) => {
+ipcMain.handle('serial:connect', async (_event, port: string, baudRate: number) => {
   return runSerialAction(async () => {
     if (grblController?.isPortConnected()) {
       await grblController.closePort();
@@ -168,7 +261,7 @@ ipcMain.handle('serial:disconnect', async () => {
   });
 });
 
-ipcMain.handle('serial:sendJob', async (event, gcode: string[]) => {
+ipcMain.handle('serial:sendJob', async (_event, gcode: string[]) => {
   return runSerialAction(async () => {
     const controller = requireController();
     if (!Array.isArray(gcode) || gcode.length === 0) {
@@ -184,7 +277,7 @@ ipcMain.handle('serial:sendJob', async (event, gcode: string[]) => {
   });
 });
 
-ipcMain.handle('serial:perimeterTest', async (event, width?: number, height?: number) => {
+ipcMain.handle('serial:perimeterTest', async (_event, width?: number, height?: number) => {
   return runSerialAction(async () => {
     const controller = requireController();
     const w = resolvePerimeterDimension(width, machineProfile.workArea.x, machineProfile.workArea.x, 'Perimeter width');
@@ -227,7 +320,7 @@ ipcMain.handle('serial:returnToOrigin', async () => {
   });
 });
 
-ipcMain.handle('serial:jog', async (event, dx?: number, dy?: number) => {
+ipcMain.handle('serial:jog', async (_event, dx?: number, dy?: number) => {
   return runSerialAction(async () => {
     const controller = requireController();
     if (controller.isJobStreaming()) {
@@ -254,12 +347,12 @@ ipcMain.handle('serial:jog', async (event, dx?: number, dy?: number) => {
   });
 });
 
-ipcMain.handle('serial:pause', async (event) => {
+ipcMain.handle('serial:pause', async (_event) => {
   // Phase 4: NOT YET IMPLEMENTED
   return { error: 'Phase 4: Not yet implemented' };
 });
 
-ipcMain.handle('serial:resume', async (event) => {
+ipcMain.handle('serial:resume', async (_event) => {
   // Phase 4: NOT YET IMPLEMENTED
   return { error: 'Phase 4: Not yet implemented' };
 });
@@ -273,23 +366,46 @@ ipcMain.handle('serial:cancel', async () => {
 });
 
 // Phase 4: IPC Handlers for project management
-ipcMain.handle('project:open', async (event, filePath: string) => {
-  // Phase 4: NOT YET IMPLEMENTED
-  return { error: 'Phase 4: Not yet implemented' };
+ipcMain.handle('project:open', async (_event, filePath: string) => {
+  return runSerialAction(async () => {
+    if (typeof filePath !== 'string' || filePath.trim() === '') {
+      throw new Error('Project file path is required');
+    }
+
+    const project = validateProject(JSON.parse(await fs.readFile(filePath, 'utf8')));
+    return { ...project, filePath };
+  });
 });
 
-ipcMain.handle('project:save', async (event, projectData: any) => {
-  // Phase 4: NOT YET IMPLEMENTED
-  return { error: 'Phase 4: Not yet implemented' };
+ipcMain.handle('project:save', async (_event, projectData: unknown, requestedPath?: string) => {
+  return runSerialAction(async () => {
+    const project = validateProject({
+      ...(isRecord(projectData) ? projectData : {}),
+      savedAt: new Date().toISOString()
+    });
+    const filePath = requestedPath || project.filePath || await defaultProjectPath(project);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, `${JSON.stringify({ ...project, filePath: undefined }, null, 2)}\n`, 'utf8');
+    return { ...project, filePath };
+  });
 });
 
 // Phase 4: IPC Handlers for machine profiles
-ipcMain.handle('machine:listProfiles', async (event) => {
-  // Phase 4: NOT YET IMPLEMENTED
-  return { error: 'Phase 4: Not yet implemented' };
+ipcMain.handle('machine:listProfiles', async (_event) => {
+  return runSerialAction(() => loadProfiles());
 });
 
-ipcMain.handle('machine:getProfile', async (event, profileId: string) => {
-  // Phase 4: NOT YET IMPLEMENTED
-  return { error: 'Phase 4: Not yet implemented' };
+ipcMain.handle('machine:getProfile', async (_event, profileId: string) => {
+  return runSerialAction(async () => {
+    if (typeof profileId !== 'string' || profileId.trim() === '') {
+      throw new Error('Machine profile id is required');
+    }
+
+    const profiles = await loadProfiles();
+    const profile = profiles.find((candidate) => candidate.id === profileId);
+    if (!profile) {
+      throw new Error(`Machine profile not found: ${profileId}`);
+    }
+    return profile;
+  });
 });

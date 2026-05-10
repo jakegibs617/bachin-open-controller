@@ -1,11 +1,31 @@
 {
   "name": "bachin-open-controller",
+  "productName": "Bachin Open Controller",
   "version": "0.0.1",
   "description": "Open-source controller for GRBL-based Bachin pen plotters and drawing machines",
   "main": "dist/electron/main.js",
   "homepage": "./",
-  "author": "",
+  "author": "Bachin Open Controller Contributors",
   "license": "MIT",
+  "config": {
+    "forge": {
+      "packagerConfig": {},
+      "makers": [
+        {
+          "name": "@electron-forge/maker-squirrel",
+          "config": {
+            "name": "bachin_open_controller"
+          }
+        },
+        {
+          "name": "@electron-forge/maker-zip",
+          "platforms": [
+            "win32"
+          ]
+        }
+      ]
+    }
+  },
   "scripts": {
     "dev": "npm run build && electron-forge start",
     "build": "tsc && node scripts/build-renderer.js",
@@ -14,7 +34,7 @@
     "ports": "node scripts/list-serial-ports.js",
     "test:watch": "jest --watch",
     "package": "npm run build && electron-forge make",
-    "lint": "eslint src --ext .ts,.tsx"
+    "lint": "eslint src electron --ext .ts,.tsx"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.0.0",

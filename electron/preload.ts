@@ -33,7 +33,7 @@ contextBridge.exposeInMainWorld('api', {
   // Phase 4: Project management
   project: {
     open: (filePath: string) => ipcRenderer.invoke('project:open', filePath),
-    save: (projectData: any) => ipcRenderer.invoke('project:save', projectData)
+    save: (projectData: any, filePath?: string) => ipcRenderer.invoke('project:save', projectData, filePath)
   },
 
   // Phase 4: Machine profiles
