@@ -4,6 +4,7 @@ Desktop.ini
 .DS_Store
 .idea/
 .vscode/
+.claude/
 
 # Future build outputs
 dist/
@@ -12,4 +13,3 @@ out/
 node_modules/
 target/
 __pycache__/
-

@@ -1,4 +1,4 @@
-import { GCodeGenerator, validateCoordinates, validateProfile } from '../src/core/gcode';
+import { GCodeGenerator, validateCoordinates, validateGCodeJob, validateProfile } from '../src/core/gcode';
 import { Canvas, MachineProfile, Path } from '../src/types';
 
 describe('GCodeGenerator', () => {
@@ -126,5 +126,41 @@ describe('Safety Validation', () => {
       { severity: 'error', message: 'Machine profile missing penUpCommand' },
       { severity: 'error', message: 'Machine profile missing penDownCommand' }
     ]);
+  });
+
+  it('allows only supported streamed G-code commands', () => {
+    const profile: MachineProfile = {
+      id: 'safe',
+      name: 'Safe Plotter',
+      machineKind: 'pen_plotter',
+      workArea: { x: 180, y: 210, z: 12 },
+      origin: 'top-left',
+      baudRate: 115200,
+      travelSpeed: 6000,
+      drawingSpeed: 1600,
+      stepsPerMm: { x: 50, y: 50, z: 40 },
+      penUpCommand: 'G1 Z0 F6000',
+      penDownCommand: 'G1 Z8 F6000',
+      safeStartupSequence: ['$1=255', 'G21', 'G90', 'G10 L2 P1 X0 Y0 Z0'],
+      safeShutdownSequence: ['G1 Z0 F6000', 'M5', '$1=250']
+    };
+
+    expect(() => validateGCodeJob([
+      '$1=255',
+      'G21',
+      'G90',
+      'G10 L2 P1 X0 Y0 Z0',
+      'G0 X10 Y-20 F6000',
+      'G1 Z8 F6000',
+      'G1 X20 Y-30 F1600',
+      'G1 Z0 F6000',
+      'M5',
+      '$1=250'
+    ], profile)).not.toThrow();
+
+    expect(() => validateGCodeJob(['M3 S1000'], profile)).toThrow('M3 is not allowed');
+    expect(() => validateGCodeJob(['$X'], profile)).toThrow('$ commands must be explicit setting assignments');
+    expect(() => validateGCodeJob(['G1 X1 Y-1 ; comment'], profile)).toThrow('comments are not allowed');
+    expect(() => validateGCodeJob(['G1 X181 Y-1 F1600'], profile)).toThrow('X 181 exceeds safe range');
   });
 });

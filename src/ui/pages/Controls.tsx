@@ -62,6 +62,12 @@ function displayLengthInput(valueMm: number, units: LengthUnit, precision: numbe
   return Number(fromMillimeters(valueMm, units).toFixed(precision));
 }
 
+function hasOutOfBoundsWarning(preparedJob: PreparedJob | null): boolean {
+  return Boolean(preparedJob?.warnings.some((warning) => (
+    warning.severity !== 'info' && warning.message.toLowerCase().includes('exceeds bounds')
+  )));
+}
+
 export const Controls: React.FC<ControlsProps> = ({
   connected,
   onConnectedChange,
@@ -90,7 +96,10 @@ export const Controls: React.FC<ControlsProps> = ({
   }, [streaming]);
 
   const apiAvailable = Boolean(window.api?.serial);
-  const jobRunDisabledReason = busy ? 'Wait for the current command to finish.' : '';
+  const jobHasOutOfBoundsWarning = hasOutOfBoundsWarning(preparedJob);
+  const jobRunDisabledReason = jobHasOutOfBoundsWarning
+    ? 'Cannot run artwork job: generated coordinates exceed the machine work area. Adjust placement, scale, or rotation before running hardware.'
+    : busy ? 'Wait for the current command to finish.' : '';
   const unitLabel = UNIT_LABELS[units];
 
   const runAction = async (action: () => Promise<IpcResult>, successMessage: string): Promise<boolean> => {
@@ -195,6 +204,10 @@ export const Controls: React.FC<ControlsProps> = ({
 
   const runPreparedJob = async () => {
     if (!preparedJob) { setError('No generated job is ready.'); return; }
+    if (hasOutOfBoundsWarning(preparedJob)) {
+      setError('Cannot run artwork job: generated coordinates exceed the machine work area.');
+      return;
+    }
     if (!window.api?.serial) { setError('Electron serial bridge is not available.'); return; }
     setStreaming(true); setPaused(false); setProgress(null); setError(null);
     setMessage(`Running ${preparedJob.name}...`);
@@ -409,7 +422,12 @@ export const Controls: React.FC<ControlsProps> = ({
                   <button type="button" onClick={cancelAndReturnToOrigin}>Cancel + Origin</button>
                 </>
               ) : (
-                <button type="button" className="btn-primary" disabled={busy} onClick={runPreparedJob}>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={busy || jobHasOutOfBoundsWarning}
+                  onClick={runPreparedJob}
+                >
                   Run Artwork Job
                 </button>
               )}

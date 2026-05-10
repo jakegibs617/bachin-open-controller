@@ -16,6 +16,7 @@
  */
 
 import { Path, MachineProfile, Canvas, JobWarning } from '../../types';
+export { validateGCodeJob, validateGCodeLine } from './validation';
 
 function formatCoordinate(value: number): string {
   return Number(value.toFixed(3)).toString();

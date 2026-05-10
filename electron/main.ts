@@ -19,6 +19,7 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { GRBLController, listSerialPorts } from '../src/core/serial-grbl';
+import { validateGCodeJob } from '../src/core/gcode';
 import ta4Profile from '../profiles/ta4.json';
 import { MachineProfile, Project } from '../src/types';
 
@@ -279,12 +280,7 @@ ipcMain.handle('serial:disconnect', async () => {
 ipcMain.handle('serial:sendJob', async (_event, gcode: string[]) => {
   return runSerialAction(async () => {
     const controller = requireController();
-    if (!Array.isArray(gcode) || gcode.length === 0) {
-      throw new Error('Generated job has no G-code lines');
-    }
-    if (gcode.some((line) => typeof line !== 'string')) {
-      throw new Error('Generated job contains an invalid G-code line');
-    }
+    validateGCodeJob(gcode, machineProfile);
 
     await controller.streamJob(gcode, (sent, total) => {
       mainWindow.webContents.send('serial:progress', { sent, total });
@@ -298,6 +294,7 @@ ipcMain.handle('serial:perimeterTest', async (_event, width?: number, height?: n
     const w = resolvePerimeterDimension(width, machineProfile.workArea.x, machineProfile.workArea.x, 'Perimeter width');
     const h = resolvePerimeterDimension(height, machineProfile.workArea.y, machineProfile.workArea.y, 'Perimeter height');
     const gcode = generatePerimeterGCode(w, h, machineProfile);
+    validateGCodeJob(gcode, machineProfile);
     await controller.streamJob(gcode, (sent, total) => {
       mainWindow.webContents.send('serial:progress', { sent, total });
     }, { waitForIdle: true });
