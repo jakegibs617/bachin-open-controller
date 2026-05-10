@@ -11,9 +11,12 @@ import { contextBridge, ipcRenderer } from 'electron';
 contextBridge.exposeInMainWorld('api', {
   // Phase 4: Serial communication
   serial: {
+    listPorts: () => ipcRenderer.invoke('serial:listPorts'),
     connect: (port: string, baudRate: number) => ipcRenderer.invoke('serial:connect', port, baudRate),
     disconnect: () => ipcRenderer.invoke('serial:disconnect'),
     sendJob: (gcode: string[]) => ipcRenderer.invoke('serial:sendJob', gcode),
+    penDown: () => ipcRenderer.invoke('serial:penDown'),
+    penUp: () => ipcRenderer.invoke('serial:penUp'),
     pause: () => ipcRenderer.invoke('serial:pause'),
     resume: () => ipcRenderer.invoke('serial:resume'),
     cancel: () => ipcRenderer.invoke('serial:cancel'),

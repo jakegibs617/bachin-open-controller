@@ -29,7 +29,7 @@ const PAGES: Array<{ id: Page; label: string }> = [
 ];
 
 export const App: React.FC = () => {
-  const [activePage, setActivePage] = React.useState<Page>('settings');
+  const [activePage, setActivePage] = React.useState<Page>('controls');
   const [units, setUnits] = React.useState<LengthUnit>('mm');
 
   return (
