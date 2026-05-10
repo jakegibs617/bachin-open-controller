@@ -3,20 +3,15 @@
  * Phase 4: SVG preview and canvas editor
  *
  * Features:
- * - Display imported SVG paths
- * - Show work area bounds
- * - Zoom/pan controls (Konva)
- * - Object transform UI (drag, scale, rotate)
- *
- * TODO (Phase 4):
- * - Implement Konva canvas
- * - Add zoom/pan
- * - Add object selection and transform
- * - Connect to project state
+ * - Display imported SVG paths on a work area grid
+ * - Drag image to reposition within the work area
+ * - Drag bottom-right handle to resize
+ * - Numeric controls for precise X/Y offset and scale
+ * - G-code regenerates after each transform change
  */
 
 import React from 'react';
-import { Canvas as CanvasModel, LengthUnit, MachineProfile, Path } from '../../types';
+import { BoundingBox, Canvas as CanvasModel, LengthUnit, MachineProfile, Path } from '../../types';
 import { formatLength } from '../../core/units';
 import { SVGParser, normalizePathToMachineCoordinates } from '../../importers/svg';
 import { traceRasterToPaths } from '../../importers/raster';
@@ -45,6 +40,16 @@ const RASTER_TRACE_SIZES = {
 
 type RasterMode = 'outline' | 'fill';
 type RasterDetail = keyof typeof RASTER_TRACE_SIZES;
+type DragMode = 'move' | 'resize';
+
+interface DragState {
+  mode: DragMode;
+  startPt: { x: number; y: number };
+  startOffset: { x: number; y: number };
+  startScale: number;
+  rawBounds: BoundingBox;
+  center: { x: number; y: number };
+}
 
 function normalizePaths(paths: Path[]): Path[] {
   if (paths.length === 0) {
@@ -85,6 +90,35 @@ function pathToPoints(path: Path): string {
   return path.segments.map((segment) => `${segment.x},${segment.y}`).join(' ');
 }
 
+function computeAllBounds(paths: Path[]): BoundingBox {
+  return paths.reduce((b, p) => ({
+    minX: Math.min(b.minX, p.bounds.minX),
+    maxX: Math.max(b.maxX, p.bounds.maxX),
+    minY: Math.min(b.minY, p.bounds.minY),
+    maxY: Math.max(b.maxY, p.bounds.maxY)
+  }), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
+}
+
+// Scale paths around their center point, then translate by dx/dy.
+// scalePct=100 + dx=0 + dy=0 is the identity transform.
+function applyTransform(paths: Path[], cx: number, cy: number, scalePct: number, dx: number, dy: number): Path[] {
+  const s = scalePct / 100;
+  return paths.map((path) => ({
+    ...path,
+    segments: path.segments.map((seg) => ({
+      ...seg,
+      x: cx + (seg.x - cx) * s + dx,
+      y: cy + (seg.y - cy) * s + dy
+    })),
+    bounds: {
+      minX: cx + (path.bounds.minX - cx) * s + dx,
+      maxX: cx + (path.bounds.maxX - cx) * s + dx,
+      minY: cy + (path.bounds.minY - cy) * s + dy,
+      maxY: cy + (path.bounds.maxY - cy) * s + dy
+    }
+  }));
+}
+
 export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJobChange }) => {
   const [message, setMessage] = React.useState('Import an SVG path file to prepare a TA4 plotting job.');
   const [error, setError] = React.useState<string | null>(null);
@@ -93,18 +127,202 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const [threshold, setThreshold] = React.useState(170);
   const [invertRaster, setInvertRaster] = React.useState(false);
 
-  const importSvg = async (file: File | undefined) => {
-    if (!file) {
-      return;
-    }
+  const [showGrid, setShowGrid] = React.useState(false);
+  const [isDragging, setIsDragging] = React.useState(false);
 
+  // rawPaths: paths normalized to canvas coordinates, before any user transform.
+  // Stored alongside the preparedJob so we can re-apply transforms without re-importing.
+  const [rawPaths, _setRawPaths] = React.useState<Path[] | null>(null);
+  const rawPathsRef = React.useRef<Path[] | null>(null);
+  const setRawPaths = (p: Path[] | null) => { rawPathsRef.current = p; _setRawPaths(p); };
+
+  // Transform state. Refs mirror state so event handlers avoid stale closures.
+  const [offsetX, _setOffsetX] = React.useState(0);
+  const [offsetY, _setOffsetY] = React.useState(0);
+  const [imageScale, _setImageScale] = React.useState(100);
+  const offsetXRef = React.useRef(0);
+  const offsetYRef = React.useRef(0);
+  const imageScaleRef = React.useRef(100);
+  const setOffsetX = (v: number) => { offsetXRef.current = v; _setOffsetX(v); };
+  const setOffsetY = (v: number) => { offsetYRef.current = v; _setOffsetY(v); };
+  const setImageScale = (v: number) => { imageScaleRef.current = v; _setImageScale(v); };
+
+  // Job name ref so pointer-up handlers can access it without stale closure issues.
+  const jobNameRef = React.useRef('');
+  React.useEffect(() => { jobNameRef.current = preparedJob?.name ?? ''; }, [preparedJob]);
+
+  const svgRef = React.useRef<SVGSVGElement>(null);
+  const dragState = React.useRef<DragState | null>(null);
+
+  // Derived display geometry
+  const rawBounds = rawPaths ? computeAllBounds(rawPaths) : null;
+  const rawCenterX = rawBounds ? (rawBounds.minX + rawBounds.maxX) / 2 : canvas.width / 2;
+  const rawCenterY = rawBounds ? (rawBounds.minY + rawBounds.maxY) / 2 : canvas.height / 2;
+
+  const s = imageScale / 100;
+  const imgGroupTransform = rawBounds
+    ? `translate(${rawCenterX + offsetX},${rawCenterY + offsetY}) scale(${s}) translate(${-rawCenterX},${-rawCenterY})`
+    : '';
+
+  // Bounding box of the image in display (post-transform) canvas coordinates
+  const displayBounds = rawBounds ? {
+    x: rawCenterX + (rawBounds.minX - rawCenterX) * s + offsetX,
+    y: rawCenterY + (rawBounds.minY - rawCenterY) * s + offsetY,
+    width: (rawBounds.maxX - rawBounds.minX) * s,
+    height: (rawBounds.maxY - rawBounds.minY) * s
+  } : null;
+
+  const getSvgPt = (e: React.PointerEvent): { x: number; y: number } => {
+    const svg = svgRef.current;
+    if (!svg) return { x: 0, y: 0 };
+    const rect = svg.getBoundingClientRect();
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * canvas.width,
+      y: ((e.clientY - rect.top) / rect.height) * canvas.height
+    };
+  };
+
+  const regenerateJob = (
+    paths: Path[],
+    name: string,
+    cx: number,
+    cy: number,
+    scalePct: number,
+    dx: number,
+    dy: number
+  ) => {
+    const transformed = applyTransform(paths, cx, cy, scalePct, dx, dy);
+    const generator = new GCodeGenerator(profile, canvas);
+    const result = generator.generate(transformed);
+    onPreparedJobChange({ name, paths: transformed, gcode: result.gcode, warnings: result.warnings });
+    setMessage(`${name}: ${transformed.length} stroke${transformed.length === 1 ? '' : 's'}, ${result.gcode.length} G-code lines.`);
+  };
+
+  const applyTransformAndRegenerate = (scalePct: number, dx: number, dy: number) => {
+    const paths = rawPathsRef.current;
+    if (!paths) return;
+    const bounds = computeAllBounds(paths);
+    const cx = (bounds.minX + bounds.maxX) / 2;
+    const cy = (bounds.minY + bounds.maxY) / 2;
+    regenerateJob(paths, jobNameRef.current, cx, cy, scalePct, dx, dy);
+  };
+
+  // --- Pointer event handlers ---
+
+  const handleMovePointerDown = (e: React.PointerEvent<SVGGElement>) => {
+    if (!rawPathsRef.current || !rawBounds) return;
+    const pt = getSvgPt(e);
+    dragState.current = {
+      mode: 'move',
+      startPt: pt,
+      startOffset: { x: offsetXRef.current, y: offsetYRef.current },
+      startScale: imageScaleRef.current,
+      rawBounds: computeAllBounds(rawPathsRef.current),
+      center: { x: rawCenterX, y: rawCenterY }
+    };
+    setIsDragging(true);
+    // Capture on the SVG so events continue even when cursor leaves the <g>
+    svgRef.current?.setPointerCapture(e.pointerId);
+    e.stopPropagation();
+  };
+
+  const handleResizePointerDown = (e: React.PointerEvent<SVGCircleElement>) => {
+    if (!rawPathsRef.current || !rawBounds) return;
+    const pt = getSvgPt(e);
+    const bounds = computeAllBounds(rawPathsRef.current);
+    dragState.current = {
+      mode: 'resize',
+      startPt: pt,
+      startOffset: { x: offsetXRef.current, y: offsetYRef.current },
+      startScale: imageScaleRef.current,
+      rawBounds: bounds,
+      center: { x: rawCenterX, y: rawCenterY }
+    };
+    setIsDragging(true);
+    svgRef.current?.setPointerCapture(e.pointerId);
+    e.stopPropagation();
+  };
+
+  const handleSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    const state = dragState.current;
+    if (!state) return;
+
+    const pt = getSvgPt(e);
+
+    if (state.mode === 'move') {
+      setOffsetX(state.startOffset.x + pt.x - state.startPt.x);
+      setOffsetY(state.startOffset.y + pt.y - state.startPt.y);
+    } else {
+      // Resize: scale proportional to how far cursor is from the transformed image center
+      const centerX = state.center.x + state.startOffset.x;
+      const centerY = state.center.y + state.startOffset.y;
+      const s0 = state.startScale / 100;
+      const initCornerX = state.center.x + (state.rawBounds.maxX - state.center.x) * s0 + state.startOffset.x;
+      const initCornerY = state.center.y + (state.rawBounds.maxY - state.center.y) * s0 + state.startOffset.y;
+      const initDist = Math.hypot(initCornerX - centerX, initCornerY - centerY);
+      const currDist = Math.hypot(pt.x - centerX, pt.y - centerY);
+      if (initDist > 0.5) {
+        setImageScale(Math.max(5, Math.min(500, Math.round(state.startScale * currDist / initDist))));
+      }
+    }
+  };
+
+  const handleSvgPointerUp = () => {
+    if (!dragState.current) return;
+    dragState.current = null;
+    setIsDragging(false);
+    applyTransformAndRegenerate(imageScaleRef.current, offsetXRef.current, offsetYRef.current);
+  };
+
+  // --- Manual control handlers ---
+
+  const handleOffsetChange = (axis: 'x' | 'y', value: number) => {
+    const dx = axis === 'x' ? value : offsetXRef.current;
+    const dy = axis === 'y' ? value : offsetYRef.current;
+    setOffsetX(dx);
+    setOffsetY(dy);
+    applyTransformAndRegenerate(imageScaleRef.current, dx, dy);
+  };
+
+  const handleScaleChange = (newScale: number) => {
+    setImageScale(newScale);
+    applyTransformAndRegenerate(newScale, offsetXRef.current, offsetYRef.current);
+  };
+
+  const handleResetTransform = () => {
+    setOffsetX(0);
+    setOffsetY(0);
+    setImageScale(100);
+    applyTransformAndRegenerate(100, 0, 0);
+  };
+
+  // --- Import and clear ---
+
+  const handleClear = () => {
+    setRawPaths(null);
+    setOffsetX(0);
+    setOffsetY(0);
+    setImageScale(100);
+    onPreparedJobChange(null);
+    setMessage('Import an SVG path file to prepare a TA4 plotting job.');
     setError(null);
+  };
+
+  const importSvg = async (file: File | undefined) => {
+    if (!file) return;
+    setError(null);
+
     try {
       const isSvg = file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
       const paths = isSvg ? await prepareSvgPaths(file) : await prepareRasterPaths(file);
       if (paths.length === 0) {
         throw new Error('No drawable paths were found.');
       }
+
+      setRawPaths(paths);
+      setOffsetX(0);
+      setOffsetY(0);
+      setImageScale(100);
 
       const generator = new GCodeGenerator(profile, canvas);
       const result = generator.generate(paths);
@@ -116,6 +334,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       });
       setMessage(`Prepared ${file.name}: ${paths.length} stroke${paths.length === 1 ? '' : 's'}, ${result.gcode.length} G-code lines.`);
     } catch (caught) {
+      setRawPaths(null);
       onPreparedJobChange(null);
       setError(caught instanceof Error ? caught.message : String(caught));
       setMessage('SVG import failed.');
@@ -125,8 +344,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const prepareSvgPaths = async (file: File): Promise<Path[]> => {
     const svgContent = await file.text();
     const parser = new SVGParser();
-    const rawPaths = parser.parse(svgContent);
-    return normalizePaths(rawPaths);
+    const rawParsedPaths = parser.parse(svgContent);
+    return normalizePaths(rawParsedPaths);
   };
 
   const prepareRasterPaths = async (file: File): Promise<Path[]> => {
@@ -182,6 +401,10 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     }
   };
 
+  const handleResizeCornerCursor = isDragging && dragState.current?.mode === 'resize'
+    ? 'grabbing'
+    : 'nwse-resize';
+
   return (
     <div className="canvas-page">
       <h2>Canvas Preview</h2>
@@ -193,12 +416,25 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           accept=".svg,.png,.jpg,.jpeg,image/svg+xml,image/png,image/jpeg"
           onChange={(event) => importSvg(event.target.files?.[0])}
         />
+        <button
+          type="button"
+          className={`toolbar-btn${showGrid ? ' active' : ''}`}
+          onClick={() => setShowGrid(!showGrid)}
+        >
+          Grid
+        </button>
+        {rawPaths && (
+          <button type="button" className="toolbar-btn" onClick={handleResetTransform}>
+            Reset
+          </button>
+        )}
         {preparedJob && (
-          <button type="button" onClick={() => onPreparedJobChange(null)}>
+          <button type="button" className="toolbar-btn" onClick={handleClear}>
             Clear
           </button>
         )}
       </section>
+
       <section className="raster-settings" aria-label="Raster trace settings">
         <label htmlFor="raster-mode">Raster mode</label>
         <select id="raster-mode" value={rasterMode} onChange={(event) => setRasterMode(event.target.value as RasterMode)}>
@@ -228,13 +464,124 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       </section>
 
       <div className="work-area-preview svg-preview" aria-label="TA4 work area preview">
-        <svg viewBox={`0 0 ${canvas.width} ${canvas.height}`} role="img" aria-label="Imported SVG preview">
-          <rect x="0" y="0" width={canvas.width} height={canvas.height} />
-          {preparedJob?.paths.map((path) => (
-            <polyline key={path.id} points={pathToPoints(path)} />
-          ))}
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${canvas.width} ${canvas.height}`}
+          role="img"
+          aria-label="Imported SVG preview"
+          style={{ userSelect: 'none', display: 'block', width: '100%', height: '100%' }}
+          onPointerMove={handleSvgPointerMove}
+          onPointerUp={handleSvgPointerUp}
+        >
+          <defs>
+            <pattern id="grid5" width="5" height="5" patternUnits="userSpaceOnUse">
+              <path d="M 5 0 L 0 0 0 5" fill="none" stroke="#dce2e8" strokeWidth="0.25" />
+            </pattern>
+            <pattern id="grid10" width="10" height="10" patternUnits="userSpaceOnUse">
+              <rect width="10" height="10" fill="url(#grid5)" />
+              <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#b8c4ce" strokeWidth="0.4" />
+            </pattern>
+          </defs>
+
+          {/* Work area background */}
+          <rect x="0" y="0" width={canvas.width} height={canvas.height} fill="#fff" stroke="#d4dce0" strokeWidth="0.5" />
+
+          {/* Grid overlay */}
+          {showGrid && (
+            <rect x="0" y="0" width={canvas.width} height={canvas.height} fill="url(#grid10)" style={{ pointerEvents: 'none' }} />
+          )}
+
+          {rawPaths && (
+            <>
+              {/* Draggable image group */}
+              <g
+                transform={imgGroupTransform}
+                style={{ cursor: isDragging && dragState.current?.mode === 'move' ? 'grabbing' : 'grab' }}
+                onPointerDown={handleMovePointerDown}
+              >
+                {rawPaths.map((path) => (
+                  <polyline key={path.id} points={pathToPoints(path)} fill="none" stroke="#1f7a4d" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+                ))}
+              </g>
+
+              {/* Selection bounding box */}
+              {displayBounds && (
+                <rect
+                  x={displayBounds.x}
+                  y={displayBounds.y}
+                  width={displayBounds.width}
+                  height={displayBounds.height}
+                  fill="none"
+                  stroke="#2563eb"
+                  strokeWidth="0.5"
+                  strokeDasharray="2 1.5"
+                  style={{ pointerEvents: 'none' }}
+                />
+              )}
+
+              {/* Resize handle: bottom-right corner of the bounding box */}
+              {displayBounds && (
+                <circle
+                  cx={displayBounds.x + displayBounds.width}
+                  cy={displayBounds.y + displayBounds.height}
+                  r={2.5}
+                  fill="#2563eb"
+                  stroke="white"
+                  strokeWidth="0.6"
+                  style={{ cursor: handleResizeCornerCursor }}
+                  onPointerDown={handleResizePointerDown}
+                />
+              )}
+            </>
+          )}
         </svg>
       </div>
+
+      {/* Image transform controls — shown only when an image is loaded */}
+      {rawPaths && (
+        <section className="image-transform-controls" aria-label="Image position and scale">
+          <label htmlFor="img-offset-x">X</label>
+          <input
+            id="img-offset-x"
+            type="number"
+            step="1"
+            value={Math.round(offsetX * 10) / 10}
+            onChange={(e) => handleOffsetChange('x', Number(e.target.value))}
+          />
+          <span className="unit-label">mm</span>
+
+          <label htmlFor="img-offset-y">Y</label>
+          <input
+            id="img-offset-y"
+            type="number"
+            step="1"
+            value={Math.round(offsetY * 10) / 10}
+            onChange={(e) => handleOffsetChange('y', Number(e.target.value))}
+          />
+          <span className="unit-label">mm</span>
+
+          <label htmlFor="img-scale-range">Scale</label>
+          <input
+            id="img-scale-range"
+            type="range"
+            min="5"
+            max="200"
+            value={Math.min(200, imageScale)}
+            onChange={(e) => handleScaleChange(Number(e.target.value))}
+          />
+          <input
+            id="img-scale-number"
+            type="number"
+            min="5"
+            max="500"
+            step="1"
+            value={imageScale}
+            onChange={(e) => handleScaleChange(Math.max(5, Math.min(500, Number(e.target.value))))}
+          />
+          <span className="unit-label">%</span>
+        </section>
+      )}
+
       <dl className="canvas-readout">
         <div>
           <dt>Width</dt>

@@ -34,12 +34,16 @@
 
 ## Phase 4: Usable MVP
 
-- Machine profile editor.
-- Canvas with drag/scale/rotate.
-- Job preview panel.
-- Connect/start/pause/stop controls.
-- Save/load project files.
-- Basic Windows packaging.
+- ✅ Connect/start/pause/stop controls.
+- ✅ Manual pen controls (pen up/down, safe position).
+- ✅ SVG and raster image (PNG/JPG) import.
+- ✅ Canvas work area preview with grid overlay.
+- ✅ Image drag-to-move and scale (corner handle + numeric controls).
+- ✅ G-code regeneration on every transform change.
+- ✅ Save/load project files.
+- ✅ Basic Windows packaging (Squirrel installer).
+- ⏳ Machine profile editor UI.
+- ⏳ Artwork rotation on canvas.
 
 ## Phase 5: Feature Growth
 

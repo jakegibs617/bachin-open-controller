@@ -97,20 +97,54 @@ npm run package
 
 ## Implementation Status
 
-- ✅ Project scaffold created
-- ✅ TypeScript types defined
-- ✅ Module structure in place
-- ✅ Test framework configured
-- ⏳ Phase 0: Awaiting hardware testing
-- ⏳ Phase 1: GRBL serial implementation
-- ⏳ Phase 2: Geometry and SVG import
-- ⏳ Phase 3: G-code generation
-- ⏳ Phase 4: Electron UI
+### ✅ Phase 0 — Hardware Protocol Discovery
+- TA4 serial connection confirmed
+- Pen up/down command format validated on hardware
+- Machine profile (`profiles/ta4.json`) locked
+
+### ✅ Phase 1 — GRBL Connection & Streaming Core
+- Serial port detection and connection (via Electron IPC)
+- Line-by-line G-code streaming with backpressure (`ok`-gated)
+- Status polling and GRBL response parsing
+- Pause / resume / cancel with safe pen-up on cancel
+
+### ✅ Phase 2 — Geometry & SVG Import
+- SVG path parsing (M, L, H, V, C, S, Q, T, A, Z)
+- ViewBox scaling and unit conversion (px → mm)
+- Bezier curve sampling to line segments
+- Bounding box computation
+- Coordinate normalization to machine work area (centered, aspect-ratio-preserving)
+- Raster image tracing (PNG / JPG → outline or fill-line paths)
+
+### ✅ Phase 3 — G-code Generation
+- Pen plotter G-code synthesis with pen-up travel + pen-down draw
+- Safety bounds validation with warning system
+- Profile-specific startup/shutdown sequence injection
+
+### 🟡 Phase 4 — MVP UI & Integration (in progress)
+**Done:**
+- Electron main process, preload IPC bridge, renderer bundle (esbuild)
+- React app with Canvas, Controls, and Settings pages
+- Serial connect / disconnect / live status display
+- Job streaming UI: start, pause, resume, cancel, progress readout
+- Manual pen controls: pen up/down, safe position commands
+- SVG and raster (PNG/JPG) artwork import pipeline
+- Canvas page work area preview (SVG-based, correct aspect ratio)
+- Grid overlay toggle (5 mm minor / 10 mm major lines)
+- Image drag-to-move within the work area
+- Image resize via corner handle (maintains center)
+- Numeric X/Y offset and scale controls with live G-code regeneration
+- Project save/load (JSON format, persistent across sessions)
+- Windows packaging via electron-forge (Squirrel installer + zip)
+
+**Remaining:**
+- Machine profile editor UI (Settings page shows units only)
+- Artwork rotation transform
+- End-to-end hardware re-validation with new positioning workflow
 
 ## Notes
 
-- All Phase N functions are marked "NOT YET IMPLEMENTED" with detailed TODO comments
-- The TA4 machine profile is scaffolded with placeholder pen commands from BachinMaker docs
-- Phase 0 must complete before Phase 1 proceeds (hardware testing required)
-- Phases 1-3 can proceed in parallel after Phase 0
-- Phase 4 depends on all previous phases
+- The TA4 machine profile is confirmed and validated on hardware
+- Raster tracing is in the Phase 2 importer (`src/importers/raster/`)
+- Canvas transform (move/scale) regenerates G-code after each interaction; rotation is next
+- Phase 5 features (DXF, text, QR, laser) are post-MVP
