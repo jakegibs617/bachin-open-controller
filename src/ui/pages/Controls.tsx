@@ -56,6 +56,7 @@ interface ControlsProps {
   preparedJob: PreparedJob | null;
   onClearPreparedJob: () => void;
   units: LengthUnit;
+  onProgressChange: (p: { sent: number; total: number } | null) => void;
 }
 
 function displayLengthInput(valueMm: number, units: LengthUnit, precision: number = 4): number {
@@ -73,7 +74,8 @@ export const Controls: React.FC<ControlsProps> = ({
   onConnectedChange,
   preparedJob,
   onClearPreparedJob,
-  units
+  units,
+  onProgressChange
 }) => {
   const [ports, setPorts] = React.useState<SerialPortInfo[]>([]);
   const [selectedPort, setSelectedPort] = React.useState('');
@@ -94,6 +96,11 @@ export const Controls: React.FC<ControlsProps> = ({
   React.useEffect(() => {
     streamStartRef.current = streaming ? Date.now() : null;
   }, [streaming]);
+
+  const updateProgress = React.useCallback((p: { sent: number; total: number } | null) => {
+    setProgress(p);
+    onProgressChange(p);
+  }, [onProgressChange]);
 
   const apiAvailable = Boolean(window.api?.serial);
   const jobHasOutOfBoundsWarning = hasOutOfBoundsWarning(preparedJob);
@@ -169,7 +176,7 @@ export const Controls: React.FC<ControlsProps> = ({
     const ok = await runAction(() => window.api!.serial.returnToOrigin(), 'Returned to origin.');
     if (ok) {
       setPenDown(false); setStreaming(false); setPaused(false);
-      setProgress(null); setJogOffset({ x: 0, y: 0 });
+      updateProgress(null); setJogOffset({ x: 0, y: 0 });
     }
   };
 
@@ -191,14 +198,14 @@ export const Controls: React.FC<ControlsProps> = ({
 
   const runPerimeterTest = async () => {
     if (!window.api?.serial) { setError('Electron serial bridge is not available.'); return; }
-    setStreaming(true); setPaused(false); setProgress(null); setError(null);
+    setStreaming(true); setPaused(false); updateProgress(null); setError(null);
     setMessage('Running perimeter test...');
     try {
       const result = await window.api.serial.perimeterTest(perimeterWidth, perimeterHeight);
       if (!result.ok) { setError(result.error); setMessage('Perimeter test failed.'); }
       else { setMessage('Perimeter test complete.'); }
     } finally {
-      setStreaming(false); setPaused(false); setProgress(null);
+      setStreaming(false); setPaused(false); updateProgress(null);
     }
   };
 
@@ -209,14 +216,14 @@ export const Controls: React.FC<ControlsProps> = ({
       return;
     }
     if (!window.api?.serial) { setError('Electron serial bridge is not available.'); return; }
-    setStreaming(true); setPaused(false); setProgress(null); setError(null);
+    setStreaming(true); setPaused(false); updateProgress(null); setError(null);
     setMessage(`Running ${preparedJob.name}...`);
     try {
       const result = await window.api.serial.sendJob(preparedJob.gcode);
       if (!result.ok) { setError(result.error); setMessage('SVG job failed.'); }
       else { setMessage('SVG job complete.'); setPenDown(false); }
     } finally {
-      setStreaming(false); setPaused(false); setProgress(null);
+      setStreaming(false); setPaused(false); updateProgress(null);
     }
   };
 
@@ -249,7 +256,7 @@ export const Controls: React.FC<ControlsProps> = ({
     const result = await window.api.serial.cancelAndReturnToOrigin();
     if (!result.ok) { setError(result.error); setMessage('Cancel and return failed.'); return; }
     setPenDown(false); setStreaming(false); setPaused(false);
-    setProgress(null); setJogOffset({ x: 0, y: 0 }); setMessage('Cancelled and returned to origin.');
+    updateProgress(null); setJogOffset({ x: 0, y: 0 }); setMessage('Cancelled and returned to origin.');
   };
 
   const stopMachine = async () => {
@@ -258,7 +265,7 @@ export const Controls: React.FC<ControlsProps> = ({
     try {
       const result = await window.api.serial.cancel();
       if (!result.ok) { setError(result.error); setMessage('Stop failed.'); return; }
-      setPenDown(false); setStreaming(false); setPaused(false); setProgress(null); setMessage('Stopped.');
+      setPenDown(false); setStreaming(false); setPaused(false); updateProgress(null); setMessage('Stopped.');
     } finally {
       setBusy(false);
     }
@@ -266,8 +273,8 @@ export const Controls: React.FC<ControlsProps> = ({
 
   React.useEffect(() => {
     if (!window.api?.serial) return;
-    return window.api.serial.onProgress((data) => setProgress(data));
-  }, []);
+    return window.api.serial.onProgress((data) => updateProgress(data));
+  }, [updateProgress]);
 
   return (
     <div className="controls-page">

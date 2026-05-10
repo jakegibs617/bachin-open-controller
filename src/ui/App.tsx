@@ -25,6 +25,7 @@ export const App: React.FC = () => {
   const [units, setUnits] = React.useState<LengthUnit>('cm');
   const [preparedJob, setPreparedJob] = React.useState<PreparedJob | null>(null);
   const [serialConnected, setSerialConnected] = React.useState(false);
+  const [jobProgress, setJobProgress] = React.useState<{ sent: number; total: number } | null>(null);
 
   return (
     <div className="app">
@@ -62,10 +63,11 @@ export const App: React.FC = () => {
             preparedJob={preparedJob}
             onClearPreparedJob={() => setPreparedJob(null)}
             units={units}
+            onProgressChange={setJobProgress}
           />
         </div>
         <div style={page !== 'canvas' ? { display: 'none' } : {}}>
-          <Canvas units={units} preparedJob={preparedJob} onPreparedJobChange={setPreparedJob} />
+          <Canvas units={units} preparedJob={preparedJob} onPreparedJobChange={setPreparedJob} jobProgress={jobProgress} />
         </div>
         <div style={page !== 'settings' ? { display: 'none' } : {}}>
           <Settings units={units} onUnitsChange={setUnits} />

@@ -24,6 +24,7 @@ interface CanvasProps {
   units: LengthUnit;
   preparedJob: PreparedJob | null;
   onPreparedJobChange: (job: PreparedJob | null) => void;
+  jobProgress?: { sent: number; total: number } | null;
 }
 
 const profile = ta4Profile as MachineProfile;
@@ -165,7 +166,59 @@ function applyTransform(
   });
 }
 
-export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJobChange }) => {
+interface ProgressStrokePoint {
+  x: number;
+  y: number;
+  lineIdx: number;
+}
+
+interface ProgressStroke {
+  startPoint: ProgressStrokePoint;
+  drawPoints: ProgressStrokePoint[];
+}
+
+function buildProgressStrokes(gcode: string[], origin: string): ProgressStroke[] {
+  const strokes: ProgressStroke[] = [];
+  let travelPoint: ProgressStrokePoint | null = null;
+  let drawPoints: ProgressStrokePoint[] = [];
+
+  const flushStroke = () => {
+    if (!travelPoint || drawPoints.length === 0) {
+      drawPoints = [];
+      return;
+    }
+    strokes.push({ startPoint: travelPoint, drawPoints: [...drawPoints] });
+    drawPoints = [];
+  };
+
+  gcode.forEach((line, lineIdx) => {
+    const upper = line.trim().toUpperCase();
+    const isG0 = /^G0\b/.test(upper);
+    const isG1 = /^G1\b/.test(upper);
+    if (!isG0 && !isG1) return;
+
+    const xMatch = line.match(/X(-?\d+(?:\.\d+)?)/i);
+    const yMatch = line.match(/Y(-?\d+(?:\.\d+)?)/i);
+    if (!xMatch || !yMatch) return;
+
+    const mx = parseFloat(xMatch[1]);
+    const my = parseFloat(yMatch[1]);
+    const cx = mx;
+    const cy = origin === 'top-left' ? -my : my;
+
+    if (isG0) {
+      flushStroke();
+      travelPoint = { x: cx, y: cy, lineIdx };
+    } else {
+      drawPoints.push({ x: cx, y: cy, lineIdx });
+    }
+  });
+
+  flushStroke();
+  return strokes;
+}
+
+export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJobChange, jobProgress }) => {
   const [message, setMessage] = React.useState('Import an SVG path file to prepare a TA4 plotting job.');
   const [error, setError] = React.useState<string | null>(null);
   const [rasterMode, setRasterMode] = React.useState<RasterMode>('outline');
@@ -204,6 +257,13 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
   const svgRef = React.useRef<SVGSVGElement>(null);
   const dragState = React.useRef<DragState | null>(null);
+
+  const progressStrokes = React.useMemo(
+    () => preparedJob ? buildProgressStrokes(preparedJob.gcode, profile.origin) : [],
+    [preparedJob]
+  );
+
+  const isPrinting = Boolean(jobProgress);
 
   // --- Derived display geometry ---
   const rawBounds = rawPaths ? computeAllBounds(rawPaths) : null;
@@ -695,7 +755,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
             <rect x="0" y="0" width={canvas.width} height={canvas.height} fill="url(#gridMajor)" style={{ pointerEvents: 'none' }} />
           )}
 
-          {rawPaths && (
+          {rawPaths && !isPrinting && (
             <>
               {/* Draggable, rotatable, scalable image group */}
               <g
@@ -767,6 +827,57 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
               )}
             </>
           )}
+
+          {/* Print progress overlay */}
+          {isPrinting && jobProgress && progressStrokes.length > 0 && (() => {
+            const sent = jobProgress.sent;
+            let curX: number | null = null;
+            let curY: number | null = null;
+
+            const strokeEls = progressStrokes.map((stroke, i) => {
+              const allPoints = [stroke.startPoint, ...stroke.drawPoints];
+              const splitAt = stroke.drawPoints.findIndex(p => p.lineIdx >= sent);
+
+              let doneStr: string | null = null;
+              let pendingStr: string | null = null;
+
+              const pts = (arr: ProgressStrokePoint[]) =>
+                arr.map(p => `${p.x.toFixed(3)},${p.y.toFixed(3)}`).join(' ');
+
+              if (splitAt === -1) {
+                doneStr = pts(allPoints);
+                const last = stroke.drawPoints[stroke.drawPoints.length - 1];
+                if (last) { curX = last.x; curY = last.y; }
+              } else if (splitAt === 0) {
+                pendingStr = pts(allPoints);
+              } else {
+                doneStr = pts(allPoints.slice(0, splitAt + 1));
+                pendingStr = pts(allPoints.slice(splitAt));
+                const lastDone = stroke.drawPoints[splitAt - 1];
+                if (lastDone) { curX = lastDone.x; curY = lastDone.y; }
+              }
+
+              return (
+                <g key={i}>
+                  {doneStr && (
+                    <polyline points={doneStr} fill="none" stroke="#16a34a" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+                  )}
+                  {pendingStr && (
+                    <polyline points={pendingStr} fill="none" stroke="#9ca3af" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+                  )}
+                </g>
+              );
+            });
+
+            return (
+              <g style={{ pointerEvents: 'none' }}>
+                {strokeEls}
+                {curX !== null && curY !== null && (
+                  <circle cx={curX} cy={curY} r={1.8} fill="#2563eb" stroke="white" strokeWidth="0.5" />
+                )}
+              </g>
+            );
+          })()}
         </svg>
       </div>
 
