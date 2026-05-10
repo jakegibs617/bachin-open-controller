@@ -5,8 +5,9 @@
  * Features:
  * - Display imported SVG paths on a work area grid
  * - Drag image to reposition within the work area
- * - Drag bottom-right handle to resize
- * - Numeric controls for precise X/Y offset and scale
+ * - Drag bottom-right corner handle to resize (scales around center)
+ * - Drag top rotation handle to rotate freely
+ * - Numeric X/Y offset, scale %, and rotation ° controls
  * - G-code regenerates after each transform change
  */
 
@@ -38,17 +39,21 @@ const RASTER_TRACE_SIZES = {
   fine: 380
 };
 
+const ROTATE_HANDLE_DIST = 10; // mm from top edge to rotation handle
+
 type RasterMode = 'outline' | 'fill';
 type RasterDetail = keyof typeof RASTER_TRACE_SIZES;
-type DragMode = 'move' | 'resize';
+type DragMode = 'move' | 'resize' | 'rotate';
 
 interface DragState {
   mode: DragMode;
   startPt: { x: number; y: number };
   startOffset: { x: number; y: number };
   startScale: number;
+  startRotation: number;
+  startAngle: number; // radians from display center to startPt (used for rotate)
   rawBounds: BoundingBox;
-  center: { x: number; y: number };
+  center: { x: number; y: number }; // raw image center
 }
 
 function normalizePaths(paths: Path[]): Path[] {
@@ -99,24 +104,51 @@ function computeAllBounds(paths: Path[]): BoundingBox {
   }), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
 }
 
-// Scale paths around their center point, then translate by dx/dy.
-// scalePct=100 + dx=0 + dy=0 is the identity transform.
-function applyTransform(paths: Path[], cx: number, cy: number, scalePct: number, dx: number, dy: number): Path[] {
+// Apply scale (around center), rotation, and translation to all path coordinates.
+// scalePct=100, rotateDeg=0, dx=0, dy=0 is the identity transform.
+function applyTransform(
+  paths: Path[],
+  cx: number,
+  cy: number,
+  scalePct: number,
+  dx: number,
+  dy: number,
+  rotateDeg: number
+): Path[] {
   const s = scalePct / 100;
-  return paths.map((path) => ({
-    ...path,
-    segments: path.segments.map((seg) => ({
-      ...seg,
-      x: cx + (seg.x - cx) * s + dx,
-      y: cy + (seg.y - cy) * s + dy
-    })),
-    bounds: {
-      minX: cx + (path.bounds.minX - cx) * s + dx,
-      maxX: cx + (path.bounds.maxX - cx) * s + dx,
-      minY: cy + (path.bounds.minY - cy) * s + dy,
-      maxY: cy + (path.bounds.maxY - cy) * s + dy
-    }
-  }));
+  const rad = (rotateDeg * Math.PI) / 180;
+  const cosR = Math.cos(rad);
+  const sinR = Math.sin(rad);
+
+  const xformPt = (x: number, y: number) => ({
+    x: cx + dx + (x - cx) * s * cosR - (y - cy) * s * sinR,
+    y: cy + dy + (x - cx) * s * sinR + (y - cy) * s * cosR
+  });
+
+  return paths.map((path) => {
+    const segments = path.segments.map((seg) => ({ ...seg, ...xformPt(seg.x, seg.y) }));
+
+    // Tight AABB of the four rotated corners of the original bounding box
+    const corners = [
+      xformPt(path.bounds.minX, path.bounds.minY),
+      xformPt(path.bounds.maxX, path.bounds.minY),
+      xformPt(path.bounds.maxX, path.bounds.maxY),
+      xformPt(path.bounds.minX, path.bounds.maxY)
+    ];
+    const xs = corners.map((c) => c.x);
+    const ys = corners.map((c) => c.y);
+
+    return {
+      ...path,
+      segments,
+      bounds: {
+        minX: Math.min(...xs),
+        maxX: Math.max(...xs),
+        minY: Math.min(...ys),
+        maxY: Math.max(...ys)
+      }
+    };
+  });
 }
 
 export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJobChange }) => {
@@ -131,46 +163,67 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const [isDragging, setIsDragging] = React.useState(false);
 
   // rawPaths: paths normalized to canvas coordinates, before any user transform.
-  // Stored alongside the preparedJob so we can re-apply transforms without re-importing.
   const [rawPaths, _setRawPaths] = React.useState<Path[] | null>(null);
   const rawPathsRef = React.useRef<Path[] | null>(null);
   const setRawPaths = (p: Path[] | null) => { rawPathsRef.current = p; _setRawPaths(p); };
 
-  // Transform state. Refs mirror state so event handlers avoid stale closures.
+  // Transform state. Refs mirror state so pointer event handlers avoid stale closures.
   const [offsetX, _setOffsetX] = React.useState(0);
   const [offsetY, _setOffsetY] = React.useState(0);
   const [imageScale, _setImageScale] = React.useState(100);
+  const [rotation, _setRotation] = React.useState(0);
   const offsetXRef = React.useRef(0);
   const offsetYRef = React.useRef(0);
   const imageScaleRef = React.useRef(100);
+  const rotationRef = React.useRef(0);
   const setOffsetX = (v: number) => { offsetXRef.current = v; _setOffsetX(v); };
   const setOffsetY = (v: number) => { offsetYRef.current = v; _setOffsetY(v); };
   const setImageScale = (v: number) => { imageScaleRef.current = v; _setImageScale(v); };
+  const setRotation = (v: number) => { rotationRef.current = v; _setRotation(v); };
 
-  // Job name ref so pointer-up handlers can access it without stale closure issues.
   const jobNameRef = React.useRef('');
   React.useEffect(() => { jobNameRef.current = preparedJob?.name ?? ''; }, [preparedJob]);
 
   const svgRef = React.useRef<SVGSVGElement>(null);
   const dragState = React.useRef<DragState | null>(null);
 
-  // Derived display geometry
+  // --- Derived display geometry ---
   const rawBounds = rawPaths ? computeAllBounds(rawPaths) : null;
   const rawCenterX = rawBounds ? (rawBounds.minX + rawBounds.maxX) / 2 : canvas.width / 2;
   const rawCenterY = rawBounds ? (rawBounds.minY + rawBounds.maxY) / 2 : canvas.height / 2;
 
   const s = imageScale / 100;
+  const rad = (rotation * Math.PI) / 180;
+  const cosR = Math.cos(rad);
+  const sinR = Math.sin(rad);
+
+  // Maps a point in raw image coordinates to its position in SVG display space
+  const toDisplay = (x: number, y: number) => ({
+    x: rawCenterX + offsetX + (x - rawCenterX) * s * cosR - (y - rawCenterY) * s * sinR,
+    y: rawCenterY + offsetY + (x - rawCenterX) * s * sinR + (y - rawCenterY) * s * cosR
+  });
+
+  // SVG transform for the image <g> — scale then rotate then translate, all around image center
   const imgGroupTransform = rawBounds
-    ? `translate(${rawCenterX + offsetX},${rawCenterY + offsetY}) scale(${s}) translate(${-rawCenterX},${-rawCenterY})`
+    ? `translate(${rawCenterX + offsetX},${rawCenterY + offsetY}) rotate(${rotation}) scale(${s}) translate(${-rawCenterX},${-rawCenterY})`
     : '';
 
-  // Bounding box of the image in display (post-transform) canvas coordinates
-  const displayBounds = rawBounds ? {
-    x: rawCenterX + (rawBounds.minX - rawCenterX) * s + offsetX,
-    y: rawCenterY + (rawBounds.minY - rawCenterY) * s + offsetY,
-    width: (rawBounds.maxX - rawBounds.minX) * s,
-    height: (rawBounds.maxY - rawBounds.minY) * s
+  // Four corners of the bounding box in display coordinates (for the selection polygon)
+  const displayCorners = rawBounds ? [
+    toDisplay(rawBounds.minX, rawBounds.minY),
+    toDisplay(rawBounds.maxX, rawBounds.minY),
+    toDisplay(rawBounds.maxX, rawBounds.maxY),
+    toDisplay(rawBounds.minX, rawBounds.maxY)
+  ] : null;
+
+  // Rotation handle: arm extends from top-center of the rotated bounding box
+  const topCenter = rawBounds ? toDisplay(rawCenterX, rawBounds.minY) : null;
+  const rotateHandle = topCenter ? {
+    x: topCenter.x - ROTATE_HANDLE_DIST * sinR,
+    y: topCenter.y - ROTATE_HANDLE_DIST * cosR
   } : null;
+
+  // --- Utilities ---
 
   const getSvgPt = (e: React.PointerEvent): { x: number; y: number } => {
     const svg = svgRef.current;
@@ -189,22 +242,23 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     cy: number,
     scalePct: number,
     dx: number,
-    dy: number
+    dy: number,
+    rotateDeg: number
   ) => {
-    const transformed = applyTransform(paths, cx, cy, scalePct, dx, dy);
+    const transformed = applyTransform(paths, cx, cy, scalePct, dx, dy, rotateDeg);
     const generator = new GCodeGenerator(profile, canvas);
     const result = generator.generate(transformed);
     onPreparedJobChange({ name, paths: transformed, gcode: result.gcode, warnings: result.warnings });
     setMessage(`${name}: ${transformed.length} stroke${transformed.length === 1 ? '' : 's'}, ${result.gcode.length} G-code lines.`);
   };
 
-  const applyTransformAndRegenerate = (scalePct: number, dx: number, dy: number) => {
+  const applyTransformAndRegenerate = (scalePct: number, dx: number, dy: number, rotateDeg: number) => {
     const paths = rawPathsRef.current;
     if (!paths) return;
     const bounds = computeAllBounds(paths);
     const cx = (bounds.minX + bounds.maxX) / 2;
     const cy = (bounds.minY + bounds.maxY) / 2;
-    regenerateJob(paths, jobNameRef.current, cx, cy, scalePct, dx, dy);
+    regenerateJob(paths, jobNameRef.current, cx, cy, scalePct, dx, dy, rotateDeg);
   };
 
   // --- Pointer event handlers ---
@@ -212,31 +266,60 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const handleMovePointerDown = (e: React.PointerEvent<SVGGElement>) => {
     if (!rawPathsRef.current || !rawBounds) return;
     const pt = getSvgPt(e);
+    const bounds = computeAllBounds(rawPathsRef.current);
     dragState.current = {
       mode: 'move',
       startPt: pt,
       startOffset: { x: offsetXRef.current, y: offsetYRef.current },
       startScale: imageScaleRef.current,
-      rawBounds: computeAllBounds(rawPathsRef.current),
-      center: { x: rawCenterX, y: rawCenterY }
+      startRotation: rotationRef.current,
+      startAngle: 0,
+      rawBounds: bounds,
+      center: { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 }
     };
     setIsDragging(true);
-    // Capture on the SVG so events continue even when cursor leaves the <g>
     svgRef.current?.setPointerCapture(e.pointerId);
     e.stopPropagation();
   };
 
   const handleResizePointerDown = (e: React.PointerEvent<SVGCircleElement>) => {
-    if (!rawPathsRef.current || !rawBounds) return;
+    if (!rawPathsRef.current) return;
     const pt = getSvgPt(e);
     const bounds = computeAllBounds(rawPathsRef.current);
+    const cx = (bounds.minX + bounds.maxX) / 2;
+    const cy = (bounds.minY + bounds.maxY) / 2;
     dragState.current = {
       mode: 'resize',
       startPt: pt,
       startOffset: { x: offsetXRef.current, y: offsetYRef.current },
       startScale: imageScaleRef.current,
+      startRotation: rotationRef.current,
+      startAngle: 0,
       rawBounds: bounds,
-      center: { x: rawCenterX, y: rawCenterY }
+      center: { x: cx, y: cy }
+    };
+    setIsDragging(true);
+    svgRef.current?.setPointerCapture(e.pointerId);
+    e.stopPropagation();
+  };
+
+  const handleRotatePointerDown = (e: React.PointerEvent<SVGCircleElement>) => {
+    if (!rawPathsRef.current) return;
+    const pt = getSvgPt(e);
+    const bounds = computeAllBounds(rawPathsRef.current);
+    const cx = (bounds.minX + bounds.maxX) / 2;
+    const cy = (bounds.minY + bounds.maxY) / 2;
+    const displayCx = cx + offsetXRef.current;
+    const displayCy = cy + offsetYRef.current;
+    dragState.current = {
+      mode: 'rotate',
+      startPt: pt,
+      startOffset: { x: offsetXRef.current, y: offsetYRef.current },
+      startScale: imageScaleRef.current,
+      startRotation: rotationRef.current,
+      startAngle: Math.atan2(pt.y - displayCy, pt.x - displayCx),
+      rawBounds: bounds,
+      center: { x: cx, y: cy }
     };
     setIsDragging(true);
     svgRef.current?.setPointerCapture(e.pointerId);
@@ -252,18 +335,30 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     if (state.mode === 'move') {
       setOffsetX(state.startOffset.x + pt.x - state.startPt.x);
       setOffsetY(state.startOffset.y + pt.y - state.startPt.y);
-    } else {
-      // Resize: scale proportional to how far cursor is from the transformed image center
-      const centerX = state.center.x + state.startOffset.x;
-      const centerY = state.center.y + state.startOffset.y;
+    } else if (state.mode === 'resize') {
+      const displayCx = state.center.x + state.startOffset.x;
+      const displayCy = state.center.y + state.startOffset.y;
       const s0 = state.startScale / 100;
-      const initCornerX = state.center.x + (state.rawBounds.maxX - state.center.x) * s0 + state.startOffset.x;
-      const initCornerY = state.center.y + (state.rawBounds.maxY - state.center.y) * s0 + state.startOffset.y;
-      const initDist = Math.hypot(initCornerX - centerX, initCornerY - centerY);
-      const currDist = Math.hypot(pt.x - centerX, pt.y - centerY);
+      const rad0 = (state.startRotation * Math.PI) / 180;
+      const cosR0 = Math.cos(rad0);
+      const sinR0 = Math.sin(rad0);
+      // Bottom-right corner of raw bounds in display space at drag start
+      const lx = (state.rawBounds.maxX - state.center.x) * s0;
+      const ly = (state.rawBounds.maxY - state.center.y) * s0;
+      const initCornerX = displayCx + lx * cosR0 - ly * sinR0;
+      const initCornerY = displayCy + lx * sinR0 + ly * cosR0;
+      const initDist = Math.hypot(initCornerX - displayCx, initCornerY - displayCy);
+      const currDist = Math.hypot(pt.x - displayCx, pt.y - displayCy);
       if (initDist > 0.5) {
         setImageScale(Math.max(5, Math.min(500, Math.round(state.startScale * currDist / initDist))));
       }
+    } else {
+      // rotate: delta angle from drag-start to current mouse, relative to display center
+      const displayCx = state.center.x + state.startOffset.x;
+      const displayCy = state.center.y + state.startOffset.y;
+      const currentAngle = Math.atan2(pt.y - displayCy, pt.x - displayCx);
+      const angleDeltaDeg = (currentAngle - state.startAngle) * (180 / Math.PI);
+      setRotation(state.startRotation + angleDeltaDeg);
     }
   };
 
@@ -271,7 +366,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     if (!dragState.current) return;
     dragState.current = null;
     setIsDragging(false);
-    applyTransformAndRegenerate(imageScaleRef.current, offsetXRef.current, offsetYRef.current);
+    applyTransformAndRegenerate(imageScaleRef.current, offsetXRef.current, offsetYRef.current, rotationRef.current);
   };
 
   // --- Manual control handlers ---
@@ -281,19 +376,25 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     const dy = axis === 'y' ? value : offsetYRef.current;
     setOffsetX(dx);
     setOffsetY(dy);
-    applyTransformAndRegenerate(imageScaleRef.current, dx, dy);
+    applyTransformAndRegenerate(imageScaleRef.current, dx, dy, rotationRef.current);
   };
 
   const handleScaleChange = (newScale: number) => {
     setImageScale(newScale);
-    applyTransformAndRegenerate(newScale, offsetXRef.current, offsetYRef.current);
+    applyTransformAndRegenerate(newScale, offsetXRef.current, offsetYRef.current, rotationRef.current);
+  };
+
+  const handleRotationChange = (newRotation: number) => {
+    setRotation(newRotation);
+    applyTransformAndRegenerate(imageScaleRef.current, offsetXRef.current, offsetYRef.current, newRotation);
   };
 
   const handleResetTransform = () => {
     setOffsetX(0);
     setOffsetY(0);
     setImageScale(100);
-    applyTransformAndRegenerate(100, 0, 0);
+    setRotation(0);
+    applyTransformAndRegenerate(100, 0, 0, 0);
   };
 
   // --- Import and clear ---
@@ -303,6 +404,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     setOffsetX(0);
     setOffsetY(0);
     setImageScale(100);
+    setRotation(0);
     onPreparedJobChange(null);
     setMessage('Import an SVG path file to prepare a TA4 plotting job.');
     setError(null);
@@ -323,6 +425,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       setOffsetX(0);
       setOffsetY(0);
       setImageScale(100);
+      setRotation(0);
 
       const generator = new GCodeGenerator(profile, canvas);
       const result = generator.generate(paths);
@@ -401,9 +504,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     }
   };
 
-  const handleResizeCornerCursor = isDragging && dragState.current?.mode === 'resize'
-    ? 'grabbing'
-    : 'nwse-resize';
+  const dragMode = dragState.current?.mode;
 
   return (
     <div className="canvas-page">
@@ -493,24 +594,28 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
           {rawPaths && (
             <>
-              {/* Draggable image group */}
+              {/* Draggable, rotatable, scalable image group */}
               <g
                 transform={imgGroupTransform}
-                style={{ cursor: isDragging && dragState.current?.mode === 'move' ? 'grabbing' : 'grab' }}
+                style={{ cursor: isDragging && dragMode === 'move' ? 'grabbing' : 'grab' }}
                 onPointerDown={handleMovePointerDown}
               >
                 {rawPaths.map((path) => (
-                  <polyline key={path.id} points={pathToPoints(path)} fill="none" stroke="#1f7a4d" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+                  <polyline
+                    key={path.id}
+                    points={pathToPoints(path)}
+                    fill="none"
+                    stroke="#1f7a4d"
+                    strokeWidth="1.2"
+                    vectorEffect="non-scaling-stroke"
+                  />
                 ))}
               </g>
 
-              {/* Selection bounding box */}
-              {displayBounds && (
-                <rect
-                  x={displayBounds.x}
-                  y={displayBounds.y}
-                  width={displayBounds.width}
-                  height={displayBounds.height}
+              {/* Selection polygon — follows rotation */}
+              {displayCorners && (
+                <polygon
+                  points={displayCorners.map((c) => `${c.x},${c.y}`).join(' ')}
                   fill="none"
                   stroke="#2563eb"
                   strokeWidth="0.5"
@@ -519,18 +624,43 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
                 />
               )}
 
-              {/* Resize handle: bottom-right corner of the bounding box */}
-              {displayBounds && (
+              {/* Resize handle: bottom-right corner */}
+              {displayCorners && (
                 <circle
-                  cx={displayBounds.x + displayBounds.width}
-                  cy={displayBounds.y + displayBounds.height}
+                  cx={displayCorners[2].x}
+                  cy={displayCorners[2].y}
                   r={2.5}
                   fill="#2563eb"
                   stroke="white"
                   strokeWidth="0.6"
-                  style={{ cursor: handleResizeCornerCursor }}
+                  style={{ cursor: isDragging && dragMode === 'resize' ? 'grabbing' : 'nwse-resize' }}
                   onPointerDown={handleResizePointerDown}
                 />
+              )}
+
+              {/* Rotation handle: arm + circle above top-center */}
+              {topCenter && rotateHandle && (
+                <>
+                  <line
+                    x1={topCenter.x}
+                    y1={topCenter.y}
+                    x2={rotateHandle.x}
+                    y2={rotateHandle.y}
+                    stroke="#2563eb"
+                    strokeWidth="0.5"
+                    style={{ pointerEvents: 'none' }}
+                  />
+                  <circle
+                    cx={rotateHandle.x}
+                    cy={rotateHandle.y}
+                    r={2.5}
+                    fill="#2563eb"
+                    stroke="white"
+                    strokeWidth="0.6"
+                    style={{ cursor: isDragging && dragMode === 'rotate' ? 'grabbing' : 'crosshair' }}
+                    onPointerDown={handleRotatePointerDown}
+                  />
+                </>
               )}
             </>
           )}
@@ -579,6 +709,16 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
             onChange={(e) => handleScaleChange(Math.max(5, Math.min(500, Number(e.target.value))))}
           />
           <span className="unit-label">%</span>
+
+          <label htmlFor="img-rotation">Rotate</label>
+          <input
+            id="img-rotation"
+            type="number"
+            step="1"
+            value={Math.round(rotation * 10) / 10}
+            onChange={(e) => handleRotationChange(Number(e.target.value))}
+          />
+          <span className="unit-label">°</span>
         </section>
       )}
 
