@@ -33,16 +33,25 @@ const canvas: CanvasModel = {
   offsetX: 0,
   offsetY: 0
 };
+type RasterMode = 'outline' | 'fill' | 'centerline';
+type GridUnit = 'mm' | 'cm' | 'in';
+
 const RASTER_TRACE_SIZES = {
   draft: 160,
   normal: 260,
-  fine: 380
+  fine: 380,
+  ultra: 560
+};
+
+type RasterDetail = keyof typeof RASTER_TRACE_SIZES;
+
+const GRID_SPACING: Record<GridUnit, { minor: number; major: number }> = {
+  mm: { minor: 5, major: 10 },
+  cm: { minor: 10, major: 20 },
+  in: { minor: 25.4 / 4, major: 25.4 }
 };
 
 const ROTATE_HANDLE_DIST = 10; // mm from top edge to rotation handle
-
-type RasterMode = 'outline' | 'fill';
-type RasterDetail = keyof typeof RASTER_TRACE_SIZES;
 type DragMode = 'move' | 'resize' | 'rotate';
 
 interface DragState {
@@ -160,6 +169,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const [invertRaster, setInvertRaster] = React.useState(false);
 
   const [showGrid, setShowGrid] = React.useState(false);
+  const [gridUnit, setGridUnit] = React.useState<GridUnit>('mm');
   const [isDragging, setIsDragging] = React.useState(false);
 
   // rawPaths: paths normalized to canvas coordinates, before any user transform.
@@ -480,7 +490,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       mode: rasterMode,
       threshold,
       xStep: 1,
-      yStep: rasterDetail === 'fine' ? 1 : 2,
+      yStep: rasterDetail === 'fine' || rasterDetail === 'ultra' ? 1 : 2,
       minRunLength: 2,
       canvasWidth: canvas.width,
       canvasHeight: canvas.height
@@ -524,6 +534,17 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
         >
           Grid
         </button>
+        {showGrid && (
+          <select
+            aria-label="Grid unit"
+            value={gridUnit}
+            onChange={(e) => setGridUnit(e.target.value as GridUnit)}
+          >
+            <option value="mm">mm</option>
+            <option value="cm">cm</option>
+            <option value="in">in</option>
+          </select>
+        )}
         {rawPaths && (
           <button type="button" className="toolbar-btn" onClick={handleResetTransform}>
             Reset
@@ -541,12 +562,14 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
         <select id="raster-mode" value={rasterMode} onChange={(event) => setRasterMode(event.target.value as RasterMode)}>
           <option value="outline">Outline</option>
           <option value="fill">Fill lines</option>
+          <option value="centerline">Centerline</option>
         </select>
         <label htmlFor="raster-detail">Detail</label>
         <select id="raster-detail" value={rasterDetail} onChange={(event) => setRasterDetail(event.target.value as RasterDetail)}>
           <option value="draft">Draft</option>
           <option value="normal">Normal</option>
           <option value="fine">Fine</option>
+          <option value="ultra">Ultra</option>
         </select>
         <label htmlFor="raster-threshold">Threshold</label>
         <input
@@ -575,13 +598,20 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           onPointerUp={handleSvgPointerUp}
         >
           <defs>
-            <pattern id="grid5" width="5" height="5" patternUnits="userSpaceOnUse">
-              <path d="M 5 0 L 0 0 0 5" fill="none" stroke="#dce2e8" strokeWidth="0.25" />
-            </pattern>
-            <pattern id="grid10" width="10" height="10" patternUnits="userSpaceOnUse">
-              <rect width="10" height="10" fill="url(#grid5)" />
-              <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#b8c4ce" strokeWidth="0.4" />
-            </pattern>
+            {showGrid && (() => {
+              const { minor, major } = GRID_SPACING[gridUnit];
+              return (
+                <>
+                  <pattern id="gridMinor" width={minor} height={minor} patternUnits="userSpaceOnUse">
+                    <path d={`M ${minor} 0 L 0 0 0 ${minor}`} fill="none" stroke="#dce2e8" strokeWidth="0.25" />
+                  </pattern>
+                  <pattern id="gridMajor" width={major} height={major} patternUnits="userSpaceOnUse">
+                    <rect width={major} height={major} fill="url(#gridMinor)" />
+                    <path d={`M ${major} 0 L 0 0 0 ${major}`} fill="none" stroke="#b8c4ce" strokeWidth="0.4" />
+                  </pattern>
+                </>
+              );
+            })()}
           </defs>
 
           {/* Work area background */}
@@ -589,7 +619,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
           {/* Grid overlay */}
           {showGrid && (
-            <rect x="0" y="0" width={canvas.width} height={canvas.height} fill="url(#grid10)" style={{ pointerEvents: 'none' }} />
+            <rect x="0" y="0" width={canvas.width} height={canvas.height} fill="url(#gridMajor)" style={{ pointerEvents: 'none' }} />
           )}
 
           {rawPaths && (

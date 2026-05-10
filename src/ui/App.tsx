@@ -3,8 +3,15 @@ import { JobWarning, LengthUnit, Path } from '../types';
 import { Controls } from './pages/Controls';
 import { Canvas } from './pages/Canvas';
 import { Settings } from './pages/Settings';
+import pkg from '../../package.json';
 
 type Page = 'controls' | 'canvas' | 'settings';
+
+const NAV_LABELS: Record<Page, string> = {
+  controls: 'Machine',
+  canvas: 'Artwork',
+  settings: 'Settings'
+};
 
 export interface PreparedJob {
   name: string;
@@ -22,7 +29,18 @@ export const App: React.FC = () => {
   return (
     <div className="app">
       <header className="app-header">
-        <span className="app-title">Bachin Open Controller</span>
+        <div className="app-bar">
+          <div>
+            <span className="app-title">Bachin Open Controller</span>
+            <span className="app-version">v{pkg.version}</span>
+          </div>
+          <div className="app-bar-right">
+            <div className="conn-chip">
+              <span className={`conn-dot${serialConnected ? ' on' : ''}`} />
+              <span>{serialConnected ? 'Connected' : 'Disconnected'}</span>
+            </div>
+          </div>
+        </div>
         <nav className="app-nav">
           {(['controls', 'canvas', 'settings'] as Page[]).map((p) => (
             <button
@@ -31,7 +49,7 @@ export const App: React.FC = () => {
               className={page === p ? 'active' : ''}
               onClick={() => setPage(p)}
             >
-              {p.charAt(0).toUpperCase() + p.slice(1)}
+              {NAV_LABELS[p]}
             </button>
           ))}
         </nav>
