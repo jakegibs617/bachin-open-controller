@@ -10,14 +10,14 @@
   "origin": "top-left",
   "baudRate": 115200,
   "travelSpeed": 6000,
-  "drawingSpeed": 1000,
+  "drawingSpeed": 1600,
   "stepsPerMm": {
     "x": 50,
     "y": 50,
     "z": 40
   },
-  "penUpCommand": "G1 Z0 F2000",
-  "penDownCommand": "G1 Z8 F2000",
+  "penUpCommand": "G1 Z0 F6000",
+  "penDownCommand": "G1 Z8 F6000",
   "penUpValue": 0,
   "penDownValue": 8,
   "safeStartupSequence": [
@@ -27,13 +27,13 @@
     "G10 L2 P1 X0 Y0 Z0"
   ],
   "safeShutdownSequence": [
-    "G1 Z0 F2000",
+    "G1 Z0 F6000",
     "M5",
     "$1=250"
   ],
   "_notes": {
-    "penUpCommand": "Confirmed 2026-05-09: G1 Z0 F2000 lifts pen reliably",
-    "penDownCommand": "Confirmed 2026-05-09: G1 Z8 F2000 lowers pen. Requires $1=255 in startup sequence — Z axis is spring-return stepper; without always-on hold current the spring ejects pen after ~250ms idle",
+    "penUpCommand": "Confirmed 2026-05-09: G1 Z0 lifts pen reliably. Feed raised to F6000 on 2026-05-10 for faster marker lift between strokes.",
+    "penDownCommand": "Confirmed 2026-05-09: G1 Z8 lowers pen. Feed raised to F6000 on 2026-05-10 for faster marker contact between strokes. Requires $1=255 in startup sequence — Z axis is spring-return stepper; without always-on hold current the spring ejects pen after ~250ms idle",
     "stepIdleDelay": "$1=255 set on job start to hold Z stepper energized. $1=250 restored on shutdown so BachinMaker is unaffected. M3/spindle commands do not control the pen — Z axis only.",
     "origin": "User reset position with Bachin software, then measured usable extents from origin.",
     "workArea": "Measured 2026-05-09: X=180 mm to the right, Y=-210 mm downward from origin. BachinMaker logs report larger travel limits, but these measured values are the safer usable drawing area."

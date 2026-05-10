@@ -6,6 +6,13 @@ level summaries and practical details that help future sessions ramp up quickly.
 
 ## [0.0.6] - 2026-05-10
 
+### Changed
+
+- Increased the default TA4 artwork drawing speed from 1000 mm/min to
+  1600 mm/min.
+- Increased the default TA4 pen Z speed from 2000 mm/min to 6000 mm/min so
+  marker up/down moves happen with much less dwell between artwork strokes.
+
 ### Added
 
 - Added environment-driven Windows code signing support for Electron Forge so

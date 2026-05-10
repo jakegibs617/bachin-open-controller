@@ -51,8 +51,8 @@ commands manually.
 ## Machine-Specific Notes
 
 - TA4 pen up/down is controlled through Z-axis G-code, not spindle commands.
-- The confirmed profile uses `G1 Z0 F2000` for pen up and `G1 Z8 F2000` for pen
-  down.
+- The confirmed profile uses `G1 Z0 F6000` for pen up and `G1 Z8 F6000` for pen
+  down, raising the Z feed to reduce marker dwell between artwork strokes.
 - `$1=255` is used at job start to keep Z holding current enabled; shutdown
   restores `$1=250`.
 - Artwork speed controls currently regenerate G-code for travel speed, drawing
