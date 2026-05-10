@@ -15,7 +15,8 @@
  * - Create test coverage with sample SVG files
  */
 
-import { Path, PathSegment, BoundingBox } from '../types';
+import { Path, PathSegment, BoundingBox, LengthUnit } from '../../types';
+import { toMillimeters } from '../../core/units';
 
 export class SVGParser {
   /**
@@ -81,6 +82,14 @@ export function convertSVGToMM(pixels: number, dpi: number = 96): number {
    * 1 inch = 25.4 mm
    */
   return (pixels / dpi) * 25.4;
+}
+
+export function convertSVGLengthToMM(value: number, unit: LengthUnit | 'px' = 'px', dpi: number = 96): number {
+  if (unit === 'px') {
+    return convertSVGToMM(value, dpi);
+  }
+
+  return toMillimeters(value, unit);
 }
 
 export function normalizePathToMachineCoordinates(

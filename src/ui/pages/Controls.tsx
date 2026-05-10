@@ -22,7 +22,7 @@ export const Controls: React.FC = () => {
   return (
     <div className="controls-page">
       <h2>Job Controls</h2>
-      <p>Controls page - NOT YET IMPLEMENTED</p>
+      <p>Serial connection support is implemented in the core controller. Use the hardware test to verify the connected GRBL controller before enabling motion controls here.</p>
     </div>
   );
 };

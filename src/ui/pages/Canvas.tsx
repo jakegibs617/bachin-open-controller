@@ -16,13 +16,21 @@
  */
 
 import React from 'react';
+import { LengthUnit } from '../../types';
+import { formatLength } from '../../core/units';
 
-export const Canvas: React.FC = () => {
+interface CanvasProps {
+  units: LengthUnit;
+}
+
+export const Canvas: React.FC<CanvasProps> = ({ units }) => {
   return (
     <div className="canvas-page">
       <h2>Canvas Preview</h2>
-      {/* Phase 4: Konva canvas here */}
-      <p>Canvas page - NOT YET IMPLEMENTED</p>
+      <div className="work-area-preview" aria-label="TA4 work area preview">
+        <span>{formatLength(210, units)}</span>
+        <span>{formatLength(297, units)}</span>
+      </div>
     </div>
   );
 };

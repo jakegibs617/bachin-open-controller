@@ -14,6 +14,8 @@ export interface StepsPerMm {
   z?: number;
 }
 
+export type LengthUnit = 'mm' | 'cm' | 'in' | 'ft';
+
 export interface MachineProfile {
   id: string;
   name: string;
@@ -87,7 +89,7 @@ export interface Project {
   name: string;
   created: string;
   machineProfileId: string;
-  units: 'mm' | 'inches';
+  units: LengthUnit;
   canvas: Canvas;
   objects: CanvasObject[];
   savedAt: string;

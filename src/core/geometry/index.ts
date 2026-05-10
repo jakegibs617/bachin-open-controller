@@ -15,7 +15,7 @@
  * - Create comprehensive test coverage
  */
 
-import { Point, BoundingBox, Path, PathSegment, Transform as TransformInterface } from '../types';
+import { Point, BoundingBox as BoundingBoxInterface, Path, PathSegment, Transform as TransformInterface } from '../../types';
 
 export class Transform {
   /**
@@ -96,7 +96,7 @@ export class BoundingBox {
     return this.maxY - this.minY;
   }
 
-  toInterface() {
+  toInterface(): BoundingBoxInterface {
     return { minX: this.minX, maxX: this.maxX, minY: this.minY, maxY: this.maxY };
   }
 }

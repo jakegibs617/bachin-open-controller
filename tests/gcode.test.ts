@@ -1,40 +1,97 @@
-/**
- * Tests for G-code Generator
- * Phase 3: Snapshot and unit tests
- *
- * Test coverage:
- * - G-code generation from paths
- * - Safety validation (bounds, coordinates)
- * - Profile command injection
- * - Warning generation
- *
- * TODO (Phase 3):
- * - Implement GCodeGenerator tests
- * - Create snapshot tests for generated output
- * - Test bounds validation
- * - Test profile-specific commands
- */
+import { GCodeGenerator, validateCoordinates, validateProfile } from '../src/core/gcode';
+import { Canvas, MachineProfile, Path } from '../src/types';
 
 describe('GCodeGenerator', () => {
-  it('should be defined', () => {
-    expect(true).toBe(true); // Placeholder
+  const profile: MachineProfile = {
+    id: 'test',
+    name: 'Test Plotter',
+    machineKind: 'pen_plotter',
+    workArea: { x: 210, y: 297, z: 12 },
+    origin: 'top-left',
+    baudRate: 115200,
+    travelSpeed: 6000,
+    drawingSpeed: 1000,
+    stepsPerMm: { x: 50, y: 50, z: 40 },
+    penUpCommand: 'G1 Z0 F2000',
+    penDownCommand: 'G1 Z8 F2000',
+    safeStartupSequence: ['G21', 'G90'],
+    safeShutdownSequence: ['G1 Z0 F2000', 'M5']
+  };
+  const canvas: Canvas = { width: 210, height: 297, offsetX: 0, offsetY: 0 };
+  const path: Path = {
+    id: 'line',
+    segments: [
+      { x: 10, y: 20 },
+      { x: 20, y: 30 },
+      { x: 20.12345, y: 30.98765 }
+    ],
+    bounds: { minX: 10, maxX: 20.12345, minY: 20, maxY: 30.98765 }
+  };
+
+  it('generates profile-specific millimeter G-code for a path', () => {
+    const generator = new GCodeGenerator(profile, canvas);
+    const result = generator.generate([path]);
+
+    expect(result.warnings).toEqual([]);
+    expect(result.gcode).toEqual([
+      'G21',
+      'G90',
+      'G1 Z0 F2000',
+      'G0 X10 Y20 F6000',
+      'G1 Z8 F2000',
+      'G1 X20 Y30 F1000',
+      'G1 X20.123 Y30.988 F1000',
+      'G1 Z0 F2000',
+      'G1 Z0 F2000',
+      'M5'
+    ]);
   });
 
-  // Phase 3: Add test suite
-  // - Generate simple path
-  // - Validate startup/shutdown sequence
-  // - Check pen up/down commands
-  // - Test bounds checking
-  // - Snapshot test output
+  it('emits warnings for empty and out-of-bounds paths', () => {
+    const generator = new GCodeGenerator(profile, canvas);
+    const result = generator.generate([
+      { id: 'empty', segments: [], bounds: { minX: 0, maxX: 0, minY: 0, maxY: 0 } },
+      { id: 'outside', segments: [{ x: 211, y: -1 }], bounds: { minX: 211, maxX: 211, minY: -1, maxY: -1 } }
+    ]);
+
+    expect(result.warnings.map((warning) => warning.message)).toEqual([
+      'Path empty has no segments',
+      'Path outside X 211 exceeds bounds [0, 210]',
+      'Path outside Y -1 exceeds bounds [0, 297]',
+      'Path outside canvas X 211 exceeds bounds [0, 210]',
+      'Path outside canvas Y -1 exceeds bounds [0, 297]',
+      'Path empty has no drawable segments'
+    ]);
+  });
 });
 
 describe('Safety Validation', () => {
-  it('should be defined', () => {
-    expect(true).toBe(true); // Placeholder
+  it('validates coordinate ranges', () => {
+    expect(validateCoordinates(4, 0, 10, 'X')).toBeNull();
+    expect(validateCoordinates(11, 0, 10, 'X')).toEqual({
+      severity: 'warn',
+      message: 'X 11 exceeds bounds [0, 10]'
+    });
   });
 
-  // Phase 3: Add test suite
-  // - Out of bounds detection
-  // - Negative coordinate warnings
-  // - Profile validation
+  it('validates required profile commands', () => {
+    expect(validateProfile({
+      id: 'bad',
+      name: 'Bad Plotter',
+      machineKind: 'pen_plotter',
+      workArea: { x: 1, y: 1 },
+      origin: 'top-left',
+      baudRate: 115200,
+      travelSpeed: 1,
+      drawingSpeed: 1,
+      stepsPerMm: { x: 1, y: 1 },
+      penUpCommand: '',
+      penDownCommand: '',
+      safeStartupSequence: [],
+      safeShutdownSequence: []
+    })).toEqual([
+      { severity: 'error', message: 'Machine profile missing penUpCommand' },
+      { severity: 'error', message: 'Machine profile missing penDownCommand' }
+    ]);
+  });
 });
