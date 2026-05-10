@@ -15,12 +15,19 @@ contextBridge.exposeInMainWorld('api', {
     connect: (port: string, baudRate: number) => ipcRenderer.invoke('serial:connect', port, baudRate),
     disconnect: () => ipcRenderer.invoke('serial:disconnect'),
     sendJob: (gcode: string[]) => ipcRenderer.invoke('serial:sendJob', gcode),
+    perimeterTest: (width: number, height: number) => ipcRenderer.invoke('serial:perimeterTest', width, height),
     penDown: () => ipcRenderer.invoke('serial:penDown'),
     penUp: () => ipcRenderer.invoke('serial:penUp'),
+    returnToOrigin: () => ipcRenderer.invoke('serial:returnToOrigin'),
+    jog: (dx: number, dy: number) => ipcRenderer.invoke('serial:jog', dx, dy),
     pause: () => ipcRenderer.invoke('serial:pause'),
     resume: () => ipcRenderer.invoke('serial:resume'),
     cancel: () => ipcRenderer.invoke('serial:cancel'),
-    onProgress: (callback: (progress: any) => void) => ipcRenderer.on('serial:progress', (event, data) => callback(data))
+    onProgress: (callback: (progress: any) => void) => {
+      const listener = (event: Electron.IpcRendererEvent, data: any) => callback(data);
+      ipcRenderer.on('serial:progress', listener);
+      return () => ipcRenderer.removeListener('serial:progress', listener);
+    }
   },
 
   // Phase 4: Project management

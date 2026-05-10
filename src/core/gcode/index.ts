@@ -15,7 +15,7 @@
  * - Test with real TA4 profile
  */
 
-import { Path, PathSegment, MachineProfile, Canvas, JobWarning } from '../../types';
+import { Path, MachineProfile, Canvas, JobWarning } from '../../types';
 
 function formatCoordinate(value: number): string {
   return Number(value.toFixed(3)).toString();
@@ -110,10 +110,8 @@ export class GCodeGenerator {
         this.collectCoordinateWarning(validateCoordinates(segment.y, 0, this.profile.workArea.y, `Path ${path.id} Y`));
       }
 
-      const widthWarning = validateCoordinates(path.bounds.maxX, 0, this.canvas.width, `Path ${path.id} canvas X`);
-      const heightWarning = validateCoordinates(path.bounds.maxY, 0, this.canvas.height, `Path ${path.id} canvas Y`);
-      this.collectCoordinateWarning(widthWarning);
-      this.collectCoordinateWarning(heightWarning);
+      this.collectCoordinateWarning(validateCoordinates(path.bounds.maxX, 0, this.canvas.width, `Path ${path.id} canvas X`));
+      this.collectCoordinateWarning(validateCoordinates(path.bounds.maxY, 0, this.canvas.height, `Path ${path.id} canvas Y`));
     }
   }
 

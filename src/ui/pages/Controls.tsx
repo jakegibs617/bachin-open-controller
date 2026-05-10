@@ -33,6 +33,11 @@ interface ElectronApi {
     disconnect: () => Promise<IpcResult>;
     penDown: () => Promise<IpcResult<string[]>>;
     penUp: () => Promise<IpcResult<string[]>>;
+    returnToOrigin: () => Promise<IpcResult<string[]>>;
+    jog: (dx: number, dy: number) => Promise<IpcResult<string[]>>;
+    perimeterTest: (width: number, height: number) => Promise<IpcResult>;
+    cancel: () => Promise<IpcResult>;
+    onProgress: (callback: (data: { sent: number; total: number }) => void) => () => void;
   };
 }
 
@@ -49,6 +54,12 @@ export const Controls: React.FC = () => {
   const [connected, setConnected] = React.useState(false);
   const [penDown, setPenDown] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  const [streaming, setStreaming] = React.useState(false);
+  const [progress, setProgress] = React.useState<{ sent: number; total: number } | null>(null);
+  const [jogStep, setJogStep] = React.useState(1);
+  const [jogOffset, setJogOffset] = React.useState({ x: 0, y: 0 });
+  const [perimeterWidth, setPerimeterWidth] = React.useState(20);
+  const [perimeterHeight, setPerimeterHeight] = React.useState(20);
   const [message, setMessage] = React.useState('Connect to a GRBL controller to enable pen control.');
   const [error, setError] = React.useState<string | null>(null);
 
@@ -142,6 +153,90 @@ export const Controls: React.FC = () => {
     }
   };
 
+  const returnToOrigin = async () => {
+    const ok = await runAction(() => window.api!.serial.returnToOrigin(), 'Returned to origin.');
+    if (ok) {
+      setPenDown(false);
+      setStreaming(false);
+      setProgress(null);
+      setJogOffset({ x: 0, y: 0 });
+    }
+  };
+
+  const jog = async (dx: number, dy: number) => {
+    const ok = await runAction(() => window.api!.serial.jog(dx, dy), `Jogged ${dx || 0}, ${dy || 0} mm.`);
+    if (ok) {
+      setPenDown(false);
+      setJogOffset((current) => ({
+        x: Number((current.x + dx).toFixed(3)),
+        y: Number((current.y + dy).toFixed(3))
+      }));
+    }
+  };
+
+  const safeJogStep = Number.isFinite(jogStep) && jogStep > 0 ? Math.min(jogStep, 10) : 1;
+
+  const runPerimeterTest = async () => {
+    if (!window.api?.serial) {
+      setError('Electron serial bridge is not available.');
+      return;
+    }
+    setStreaming(true);
+    setProgress(null);
+    setError(null);
+    setMessage('Running perimeter test...');
+    try {
+      const result = await window.api.serial.perimeterTest(perimeterWidth, perimeterHeight);
+      if (!result.ok) {
+        setError(result.error);
+        setMessage('Perimeter test failed.');
+      } else {
+        setMessage('Perimeter test complete.');
+      }
+    } finally {
+      setStreaming(false);
+      setProgress(null);
+    }
+  };
+
+  const cancelJob = async () => {
+    setMessage('Cancelling...');
+    const result = await window.api?.serial.cancel();
+    if (result && !result.ok) {
+      setError(result.error);
+    }
+  };
+
+  const stopMachine = async () => {
+    if (!window.api?.serial) {
+      setError('Electron serial bridge is not available.');
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    setMessage('Stopping...');
+    try {
+      const result = await window.api.serial.cancel();
+      if (!result.ok) {
+        setError(result.error);
+        setMessage('Stop failed.');
+        return;
+      }
+      setPenDown(false);
+      setStreaming(false);
+      setProgress(null);
+      setMessage('Stopped.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (!window.api?.serial) return;
+    return window.api.serial.onProgress((data) => setProgress(data));
+  }, []);
+
   return (
     <div className="controls-page">
       <h2>Manual Pen Control</h2>
@@ -202,9 +297,102 @@ export const Controls: React.FC = () => {
             Up
           </button>
         </div>
+        <div className="field-row origin-row">
+          <button type="button" disabled={!connected || busy} onClick={returnToOrigin}>
+            Return to Origin
+          </button>
+          <button type="button" className="stop-button" disabled={!connected || busy} onClick={stopMachine}>
+            Stop
+          </button>
+        </div>
       </section>
 
-      <p className="status-message">{busy ? 'Working...' : message}</p>
+      <section className="control-section">
+        <h3>Jog</h3>
+        <dl className="jog-readout">
+          <div>
+            <dt>X offset</dt>
+            <dd>{jogOffset.x.toFixed(1)} mm</dd>
+          </div>
+          <div>
+            <dt>Y offset</dt>
+            <dd>{jogOffset.y.toFixed(1)} mm</dd>
+          </div>
+        </dl>
+        <div className="field-row">
+          <label htmlFor="jog-step">Step (mm)</label>
+          <input
+            id="jog-step"
+            type="number"
+            min="0.1"
+            max="10"
+            step="0.1"
+            value={jogStep}
+            disabled={busy || streaming}
+            onChange={(event) => setJogStep(Number(event.target.value))}
+          />
+          <button type="button" disabled={busy || streaming} onClick={() => setJogOffset({ x: 0, y: 0 })}>
+            Zero Counter
+          </button>
+        </div>
+        <div className="jog-pad" aria-label="Jog controls">
+          <button type="button" disabled={!connected || busy || streaming} onClick={() => jog(0, safeJogStep)}>
+            Up
+          </button>
+          <button type="button" disabled={!connected || busy || streaming} onClick={() => jog(-safeJogStep, 0)}>
+            Left
+          </button>
+          <button type="button" disabled={!connected || busy || streaming} onClick={() => jog(safeJogStep, 0)}>
+            Right
+          </button>
+          <button type="button" disabled={!connected || busy || streaming} onClick={() => jog(0, -safeJogStep)}>
+            Down
+          </button>
+        </div>
+      </section>
+
+      <section className="control-section">
+        <h3>Perimeter Test</h3>
+        <p className="hint">Safe measured area is 180 mm right by 210 mm down from origin.</p>
+        <div className="field-row">
+          <label htmlFor="perimeter-width">Width (mm)</label>
+          <input
+            id="perimeter-width"
+            type="number"
+            min="10"
+            max="180"
+            value={perimeterWidth}
+            disabled={streaming}
+            onChange={(e) => setPerimeterWidth(Number(e.target.value))}
+          />
+        </div>
+        <div className="field-row">
+          <label htmlFor="perimeter-height">Height (mm)</label>
+          <input
+            id="perimeter-height"
+            type="number"
+            min="10"
+            max="210"
+            value={perimeterHeight}
+            disabled={streaming}
+            onChange={(e) => setPerimeterHeight(Number(e.target.value))}
+          />
+        </div>
+        <div className="field-row">
+          {streaming ? (
+            <button type="button" onClick={cancelJob}>Cancel</button>
+          ) : (
+            <button type="button" disabled={!connected || busy} onClick={runPerimeterTest}>
+              Run Perimeter Test
+            </button>
+          )}
+          {progress && (
+            <span className="progress-label">{progress.sent} / {progress.total} lines</span>
+          )}
+        </div>
+      </section>
+
+      <p className="status-message">{busy || streaming ? 'Working...' : message}</p>
       {error && <p className="error-message">{error}</p>}
     </div>
   );

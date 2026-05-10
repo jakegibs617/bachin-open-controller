@@ -127,9 +127,10 @@ export class GRBLController extends EventEmitter {
     resolve: (status: GRBLStatus) => void;
     reject: (error: Error) => void;
     timer: NodeJS.Timeout;
-    interval: NodeJS.Timeout;
   };
   private readonly transportFactory: SerialTransportFactory;
+  private isStreaming = false;
+  private streamingCancelled = false;
 
   constructor(transportFactory: SerialTransportFactory = (portName, baudRate) => new NodeSerialTransport(portName, baudRate)) {
     super();
@@ -148,8 +149,6 @@ export class GRBLController extends EventEmitter {
     });
 
     await this.transport.open();
-    await this.transport.write('\r\n\r\n');
-    await delay(2000);
     this.isConnected = true;
     this.emit('connected', { portName, baudRate });
   }
@@ -185,53 +184,96 @@ export class GRBLController extends EventEmitter {
     const transport = this.requireTransport();
 
     const statusPromise = new Promise<GRBLStatus>((resolve, reject) => {
-      const sendStatusQuery = () => {
-        transport.write('?').catch((error) => {
-          if (this.pendingStatus) {
-            clearTimeout(this.pendingStatus.timer);
-            clearInterval(this.pendingStatus.interval);
-            this.pendingStatus = undefined;
-          }
-          reject(error);
-        });
-      };
-
-      const interval = setInterval(sendStatusQuery, 1000);
       const timer = setTimeout(() => {
-        clearInterval(interval);
         this.pendingStatus = undefined;
         reject(new Error('Timed out waiting for GRBL status report'));
-      }, 5000);
+      }, 3000);
 
-      this.pendingStatus = { resolve, reject, timer, interval };
-      sendStatusQuery();
+      this.pendingStatus = { resolve, reject, timer };
     });
+
+    await transport.write('?');
     return statusPromise;
   }
 
+  async streamJob(lines: string[], onProgress?: (sent: number, total: number) => void, options: { waitForIdle?: boolean } = {}): Promise<void> {
+    if (this.isStreaming) {
+      throw new Error('A job is already streaming');
+    }
+    this.isStreaming = true;
+    this.streamingCancelled = false;
+    const effective = lines.filter((l) => { const t = l.trim(); return t && !t.startsWith(';'); });
+    try {
+      for (let i = 0; i < effective.length; i++) {
+        if (this.streamingCancelled) {
+          throw new Error('Job cancelled');
+        }
+        const response = await this.sendCommand(effective[i]);
+        if (response.type !== 'ok') {
+          throw new Error(`GRBL error on line ${i + 1}: ${response.message}`);
+        }
+        if (options.waitForIdle) {
+          await this.waitUntilIdle();
+        }
+        onProgress?.(i + 1, effective.length);
+        this.emit('progress', { sent: i + 1, total: effective.length });
+      }
+    } finally {
+      this.isStreaming = false;
+      this.streamingCancelled = false;
+    }
+  }
+
+  isJobStreaming(): boolean {
+    return this.isStreaming;
+  }
+
+  async waitUntilIdle(timeoutMs: number = 30000): Promise<void> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt <= timeoutMs) {
+      if (this.streamingCancelled) {
+        throw new Error('Job cancelled');
+      }
+      const status = await this.queryStatus();
+      if (status.state === 'idle') {
+        return;
+      }
+      if (status.state === 'alarm') {
+        throw new Error('GRBL entered alarm state');
+      }
+      await delay(100);
+    }
+    throw new Error('Timed out waiting for GRBL to become idle');
+  }
+
   async pause(): Promise<void> {
-    // Phase 1: Implement pause
-    // 1. Stop sending new lines
-    // 2. Hold streaming queue
-    console.log(`[GRBLController] pause - NOT YET IMPLEMENTED`);
+    // Phase 1: Not yet implemented — requires streaming pause flag
     throw new Error('Phase 1: Not yet implemented');
   }
 
   async resume(): Promise<void> {
-    // Phase 1: Implement resume
-    // 1. Continue sending queued lines
-    console.log(`[GRBLController] resume - NOT YET IMPLEMENTED`);
+    // Phase 1: Not yet implemented — requires streaming pause flag
     throw new Error('Phase 1: Not yet implemented');
   }
 
   async cancel(): Promise<void> {
-    const transport = this.requireTransport();
+    this.streamingCancelled = true;
+    if (!this.transport || !this.transport.isOpen()) {
+      return;
+    }
     this.pendingResponses.forEach((pending) => {
       clearTimeout(pending.timer);
       pending.reject(new Error('Command cancelled'));
     });
     this.pendingResponses = [];
-    await transport.write(Buffer.from([0x18]));
+    if (this.pendingStatus) {
+      clearTimeout(this.pendingStatus.timer);
+      this.pendingStatus.reject(new Error('Command cancelled'));
+      this.pendingStatus = undefined;
+    }
+    await this.transport.write('!');
+    await delay(50);
+    await this.transport.write(Buffer.from([0x18]));
   }
 
   isPortConnected(): boolean {
@@ -253,7 +295,6 @@ export class GRBLController extends EventEmitter {
       const status = parseGRBLStatus(line);
       if (this.pendingStatus) {
         clearTimeout(this.pendingStatus.timer);
-        clearInterval(this.pendingStatus.interval);
         this.pendingStatus.resolve(status);
         this.pendingStatus = undefined;
       }
@@ -324,36 +365,30 @@ export function parseGRBLStatus(report: string): GRBLStatus {
 }
 
 export class StreamingQueue {
-  /**
-   * Phase 1: Manages G-code queue with progress tracking
-   * - Tracks sent/accepted/failed lines
-   * - Handles backpressure to avoid serial buffer overflow
-   * - Emits progress events
-   */
-  
   private lines: string[] = [];
-  private sentCount: number = 0;
-  private acceptedCount: number = 0;
-
-  constructor() {
-    // Phase 1: Initialize queue
-  }
+  private sentCount = 0;
+  private acceptedCount = 0;
 
   push(gcode: string[]): void {
-    // Phase 1: Add lines to queue
+    this.lines.push(...gcode);
   }
 
-  async sendNext(): Promise<void> {
-    // Phase 1: Send next line with backpressure
+  next(): string | undefined {
+    if (this.sentCount >= this.lines.length) return undefined;
+    return this.lines[this.sentCount++];
+  }
+
+  acknowledge(): void {
+    this.acceptedCount++;
   }
 
   getProgress(): { sent: number; accepted: number; total: number } {
-    // Phase 1: Return progress stats
     return { sent: this.sentCount, accepted: this.acceptedCount, total: this.lines.length };
   }
 
   clear(): void {
-    // Phase 1: Clear queue on cancel
     this.lines = [];
+    this.sentCount = 0;
+    this.acceptedCount = 0;
   }
 }

@@ -3,8 +3,8 @@
   "name": "Bachin TA4",
   "machineKind": "pen_plotter",
   "workArea": {
-    "x": 210,
-    "y": 297,
+    "x": 180,
+    "y": 210,
     "z": 12
   },
   "origin": "top-left",
@@ -35,7 +35,7 @@
     "penUpCommand": "Confirmed 2026-05-09: G1 Z0 F2000 lifts pen reliably",
     "penDownCommand": "Confirmed 2026-05-09: G1 Z8 F2000 lowers pen. Requires $1=255 in startup sequence — Z axis is spring-return stepper; without always-on hold current the spring ejects pen after ~250ms idle",
     "stepIdleDelay": "$1=255 set on job start to hold Z stepper energized. $1=250 restored on shutdown so BachinMaker is unaffected. M3/spindle commands do not control the pen — Z axis only.",
-    "origin": "Initial assumption - may need adjustment based on user preference",
-    "workArea": "From BachinMaker logs: X=210, Y=297, Z=12"
+    "origin": "User reset position with Bachin software, then measured usable extents from origin.",
+    "workArea": "Measured 2026-05-09: X=180 mm to the right, Y=-210 mm downward from origin. BachinMaker logs report larger travel limits, but these measured values are the safer usable drawing area."
   }
 }
