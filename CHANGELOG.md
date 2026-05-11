@@ -4,6 +4,39 @@ All notable project changes should be recorded here during each coding session.
 Use the newest package version as the heading, and include both commit-message
 level summaries and practical details that help future sessions ramp up quickly.
 
+## [0.0.8] - 2026-05-10
+
+### Changed
+
+- Replaced Artwork speed number inputs with slider controls for Travel, Draw,
+  and Pen Z speeds.
+- Added visible Min, Optimal, and Max anchors to each speed scale. Optimal uses
+  the TA4 profile default that Reset speeds restores.
+
+### Verified
+
+- `npm.cmd run lint`
+- `npm.cmd test -- --runInBand`
+- `npm.cmd run build`
+- `npm.cmd run package`
+
+## [0.0.7] - 2026-05-10
+
+### Added
+
+- Persisted Artwork action speed settings across app restarts. Travel, drawing,
+  and pen Z speeds now load from saved app settings and auto-save whenever the
+  user changes or resets them.
+- Added focused tests for speed setting defaults, storage loading, invalid saved
+  values, clamping, and saving.
+
+### Verified
+
+- `npm.cmd run lint`
+- `npm.cmd test -- --runInBand`
+- `npm.cmd run build`
+- `npm.cmd run package`
+
 ## [0.0.6] - 2026-05-10
 
 ### Changed

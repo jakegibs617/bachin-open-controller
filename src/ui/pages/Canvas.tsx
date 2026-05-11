@@ -309,7 +309,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   ));
   const [message, setMessage] = React.useState('Import an SVG path file to prepare a TA4 plotting job.');
   const [error, setError] = React.useState<string | null>(null);
-  const [rasterMode, setRasterMode] = React.useState<RasterMode>('outline');
+  const [rasterMode, setRasterMode] = React.useState<RasterMode>('centerline');
   const [rasterDetail, setRasterDetail] = React.useState<RasterDetail>('fine');
   const [threshold, setThreshold] = React.useState(170);
   const [brightness, setBrightness] = React.useState(0);
@@ -744,7 +744,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
             Reset
           </button>
         )}
-        {preparedJob && (
+        {rawPaths && (
           <button type="button" className="toolbar-btn" onClick={handleClear}>
             Clear
           </button>

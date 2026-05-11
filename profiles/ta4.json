@@ -28,6 +28,7 @@
   ],
   "safeShutdownSequence": [
     "G1 Z0 F6000",
+    "G0 X0 Y0 F6000",
     "M5",
     "$1=250"
   ],

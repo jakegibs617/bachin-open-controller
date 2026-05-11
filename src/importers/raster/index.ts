@@ -210,9 +210,124 @@ function zhangSuenThin(binary: Uint8Array, width: number, height: number): void 
   }
 }
 
-// Greedy DFS trace of a skeleton bitmap into polyline paths.
-// At branch points the first unvisited neighbor is followed; remaining branches
-// become new paths when the outer scan reaches their unvisited pixels.
+interface SkelEdge {
+  id: number;
+  pixels: Array<{ x: number; y: number }>;
+  nodeA: number;
+  nodeB: number;
+}
+
+interface SkelNode {
+  x: number;
+  y: number;
+  edgeIds: number[];
+}
+
+function skelNeighbors(
+  binary: Uint8Array, width: number, height: number, x: number, y: number
+): Array<{ x: number; y: number }> {
+  const result: Array<{ x: number; y: number }> = [];
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      const nx = x + dx, ny = y + dy;
+      if (nx >= 0 && nx < width && ny >= 0 && ny < height && binary[ny * width + nx] === 1)
+        result.push({ x: nx, y: ny });
+    }
+  }
+  return result;
+}
+
+// Builds a graph where nodes are endpoints and branch points; edges are the pixel
+// chains connecting them. Degree-2 pixels are interior to edges, not nodes.
+function buildSkeletonGraph(
+  binary: Uint8Array, width: number, height: number
+): { nodes: SkelNode[]; edges: SkelEdge[] } {
+  const nodes: SkelNode[] = [];
+  const edges: SkelEdge[] = [];
+  const nodeMap = new Int32Array(width * height).fill(-1);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (binary[y * width + x] !== 1) continue;
+      const deg = skelNeighbors(binary, width, height, x, y).length;
+      if (deg !== 2) {
+        nodeMap[y * width + x] = nodes.length;
+        nodes.push({ x, y, edgeIds: [] });
+      }
+    }
+  }
+
+  const edgeVisited = new Uint8Array(width * height);
+
+  const traceEdge = (fromNi: number, sx: number, sy: number): void => {
+    if (edgeVisited[sy * width + sx]) return;
+    const pixels: Array<{ x: number; y: number }> = [
+      { x: nodes[fromNi].x, y: nodes[fromNi].y },
+      { x: sx, y: sy }
+    ];
+    edgeVisited[sy * width + sx] = 1;
+    let px = nodes[fromNi].x, py = nodes[fromNi].y, cx = sx, cy = sy;
+    while (nodeMap[cy * width + cx] === -1) {
+      const nbrs = skelNeighbors(binary, width, height, cx, cy)
+        .filter(n => !(n.x === px && n.y === py));
+      if (nbrs.length === 0) break;
+      px = cx; py = cy;
+      cx = nbrs[0].x; cy = nbrs[0].y;
+      edgeVisited[cy * width + cx] = 1;
+      pixels.push({ x: cx, y: cy });
+    }
+    const toNi = nodeMap[cy * width + cx];
+    if (toNi === -1) return;
+    const eid = edges.length;
+    edges.push({ id: eid, pixels, nodeA: fromNi, nodeB: toNi });
+    nodes[fromNi].edgeIds.push(eid);
+    if (toNi !== fromNi) nodes[toNi].edgeIds.push(eid);
+  };
+
+  for (let ni = 0; ni < nodes.length; ni++) {
+    for (const nbr of skelNeighbors(binary, width, height, nodes[ni].x, nodes[ni].y)) {
+      traceEdge(ni, nbr.x, nbr.y);
+    }
+  }
+
+  // Isolated loops: all pixels have degree 2 so no nodes were created above.
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      if (binary[idx] !== 1 || edgeVisited[idx] || nodeMap[idx] !== -1) continue;
+      const ni = nodes.length;
+      nodeMap[idx] = ni;
+      nodes.push({ x, y, edgeIds: [] });
+      edgeVisited[idx] = 1;
+      const pixels: Array<{ x: number; y: number }> = [{ x, y }];
+      const nbrs0 = skelNeighbors(binary, width, height, x, y);
+      if (nbrs0.length > 0) {
+        let px = x, py = y, cx = nbrs0[0].x, cy = nbrs0[0].y;
+        while (!(cx === x && cy === y)) {
+          edgeVisited[cy * width + cx] = 1;
+          pixels.push({ x: cx, y: cy });
+          const next = skelNeighbors(binary, width, height, cx, cy)
+            .filter(n => !(n.x === px && n.y === py));
+          if (next.length === 0) break;
+          px = cx; py = cy; cx = next[0].x; cy = next[0].y;
+        }
+      }
+      pixels.push({ x, y });
+      const eid = edges.length;
+      edges.push({ id: eid, pixels, nodeA: ni, nodeB: ni });
+      nodes[ni].edgeIds.push(eid);
+    }
+  }
+
+  return { nodes, edges };
+}
+
+// Graph-based skeleton traversal. Within each connected component, edges are walked
+// using direction preference at branch points (smallest angular deviation from current
+// heading) so the pen flows naturally rather than making arbitrary turns. Pen only
+// lifts between disconnected components, or when a component has topology that
+// requires backtracking to a new starting node.
 function skeletonToPaths(
   binary: Uint8Array,
   width: number,
@@ -220,70 +335,188 @@ function skeletonToPaths(
   options: RasterTraceOptions
 ): Path[] {
   const fit = computeFit(width, height, options.canvasWidth, options.canvasHeight);
-  const paths: Path[] = [];
-  const visited = new Uint8Array(width * height);
+  const pixelDist = width > 1 ? fit.drawWidth / (width - 1) : fit.drawWidth;
+  const { nodes, edges } = buildSkeletonGraph(binary, width, height);
+  if (edges.length === 0) return [];
 
-  const unvisitedNeighbors = (x: number, y: number): Array<{ x: number; y: number }> => {
-    const result: Array<{ x: number; y: number }> = [];
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        if (dx === 0 && dy === 0) continue;
-        const nx = x + dx;
-        const ny = y + dy;
-        if (nx >= 0 && nx < width && ny >= 0 && ny < height
-            && binary[ny * width + nx] === 1 && !visited[ny * width + nx]) {
-          result.push({ x: nx, y: ny });
-        }
+  // Label each edge with its connected component id.
+  const edgeComp = new Int32Array(edges.length).fill(-1);
+  const components: number[][] = [];
+
+  const flood = (startEid: number, cid: number) => {
+    const stack = [startEid];
+    while (stack.length > 0) {
+      const eid = stack.pop()!;
+      if (edgeComp[eid] !== -1) continue;
+      edgeComp[eid] = cid;
+      for (const next of [...nodes[edges[eid].nodeA].edgeIds, ...nodes[edges[eid].nodeB].edgeIds]) {
+        if (edgeComp[next] === -1) stack.push(next);
       }
     }
-    return result;
   };
 
-  for (let startY = 0; startY < height; startY++) {
-    for (let startX = 0; startX < width; startX++) {
-      if (binary[startY * width + startX] !== 1 || visited[startY * width + startX]) continue;
+  for (let i = 0; i < edges.length; i++) {
+    if (edgeComp[i] === -1) { flood(i, components.length); components.push([]); }
+  }
+  for (let i = 0; i < edges.length; i++) components[edgeComp[i]].push(i);
 
-      const pts: Array<{ x: number; y: number }> = [];
-      let cx = startX;
-      let cy = startY;
-      let tracing = true;
+  const paths: Path[] = [];
+  const usedEdges = new Set<number>();
 
-      while (tracing) {
-        visited[cy * width + cx] = 1;
-        pts.push({ x: cx, y: cy });
-        const nbrs = unvisitedNeighbors(cx, cy);
-        if (nbrs.length === 0) {
-          tracing = false;
-        } else {
-          cx = nbrs[0].x;
-          cy = nbrs[0].y;
-        }
+  // At a branch point, pick the edge whose first step most closely continues
+  // the current heading (maximise dot product). Falls back to any unused edge.
+  const pickEdge = (ni: number, dirX: number, dirY: number, compSet: Set<number>): number => {
+    const unused = nodes[ni].edgeIds.filter(eid => !usedEdges.has(eid) && compSet.has(eid));
+    if (unused.length === 0) return -1;
+    if (unused.length === 1 || (dirX === 0 && dirY === 0)) return unused[0];
+    let best = unused[0], bestScore = -Infinity;
+    for (const eid of unused) {
+      const e = edges[eid];
+      const px = e.nodeA === ni ? e.pixels : [...e.pixels].reverse();
+      if (px.length < 2) continue;
+      const ex = px[1].x - px[0].x, ey = px[1].y - px[0].y;
+      const mag = Math.sqrt(ex * ex + ey * ey);
+      const score = mag > 0 ? (dirX * ex + dirY * ey) / mag : 0;
+      if (score > bestScore) { bestScore = score; best = eid; }
+    }
+    return best;
+  };
+
+  const emitPath = (pixels: Array<{ x: number; y: number }>) => {
+    if (pixels.length < 2) return;
+    const segments = pixels.map((pt, i) => ({
+      ...toCanvasPoint(pt.x, pt.y, width, height, fit),
+      penDown: i > 0
+    }));
+    paths.push({
+      id: `raster-centerline-${paths.length + 1}`,
+      segments,
+      bounds: computeBounds(segments)
+    });
+  };
+
+  for (const compEdgeIndices of components) {
+    const compSet = new Set(compEdgeIndices);
+
+    // Collect nodes that belong to this component and their in-component degree.
+    const compNodes = new Set<number>();
+    for (const eid of compEdgeIndices) {
+      compNodes.add(edges[eid].nodeA);
+      compNodes.add(edges[eid].nodeB);
+    }
+    const inDegree = (ni: number) =>
+      nodes[ni].edgeIds.filter(eid => compSet.has(eid)).length;
+
+    // Prefer starting from an endpoint (degree 1) so we avoid needing to backtrack.
+    let startNode = compNodes.values().next().value as number;
+    for (const ni of compNodes) {
+      if (inDegree(ni) === 1) { startNode = ni; break; }
+    }
+
+    let curNode = startNode;
+    let dirX = 0, dirY = 0;
+    let curPixels: Array<{ x: number; y: number }> = [];
+
+    while (true) {
+      const eid = pickEdge(curNode, dirX, dirY, compSet);
+
+      if (eid === -1) {
+        // Dead end — find nearest node in this component that still has unused edges.
+        const pending = [...compNodes].filter(
+          ni => nodes[ni].edgeIds.some(e => !usedEdges.has(e) && compSet.has(e))
+        );
+        emitPath(curPixels);
+        curPixels = [];
+        dirX = 0; dirY = 0;
+        if (pending.length === 0) break;
+        // Jump to the closest pending node (nearest-neighbor sort will handle
+        // inter-segment ordering later).
+        curNode = pending[0];
+        continue;
       }
 
-      if (pts.length < 2) continue;
+      usedEdges.add(eid);
+      const e = edges[eid];
+      const reversed = e.nodeB === curNode && e.nodeA !== curNode;
+      const px = reversed ? [...e.pixels].reverse() : e.pixels;
 
-      const segments = pts.map((pt, i) => ({
-        ...toCanvasPoint(pt.x, pt.y, width, height, fit),
-        penDown: i > 0
-      }));
+      // Skip pixel[0] when appending — it's the current node, already the last
+      // point in curPixels (or the start of a fresh path).
+      const startI = curPixels.length > 0 ? 1 : 0;
+      for (let i = startI; i < px.length; i++) curPixels.push(px[i]);
+      if (curPixels.length === 0 && px.length > 0) curPixels.push(px[0]);
 
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      for (const seg of segments) {
-        if (seg.x < minX) minX = seg.x;
-        if (seg.x > maxX) maxX = seg.x;
-        if (seg.y < minY) minY = seg.y;
-        if (seg.y > maxY) maxY = seg.y;
+      if (px.length >= 2) {
+        dirX = px[px.length - 1].x - px[px.length - 2].x;
+        dirY = px[px.length - 1].y - px[px.length - 2].y;
       }
-
-      paths.push({
-        id: `raster-centerline-${paths.length + 1}`,
-        segments,
-        bounds: { minX, maxX, minY, maxY }
-      });
+      curNode = reversed ? e.nodeA : e.nodeB;
     }
   }
 
-  return paths;
+  const sorted = sortPathsNearestNeighbor(paths);
+  return bridgeNearbyPaths(sorted, pixelDist * 5);
+}
+
+// Greedy nearest-neighbor reordering: each next path is the one whose start
+// or end is closest to the current pen position, minimizing travel between strokes.
+function sortPathsNearestNeighbor(paths: Path[]): Path[] {
+  if (paths.length <= 1) return paths;
+
+  const remaining = paths.slice();
+  const sorted: Path[] = [];
+  let curX = 0;
+  let curY = 0;
+
+  while (remaining.length > 0) {
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    let bestReverse = false;
+
+    for (let i = 0; i < remaining.length; i++) {
+      const segs = remaining[i].segments;
+      const s = segs[0];
+      const e = segs[segs.length - 1];
+      const ds = (s.x - curX) ** 2 + (s.y - curY) ** 2;
+      const de = (e.x - curX) ** 2 + (e.y - curY) ** 2;
+      if (ds < bestDist) { bestDist = ds; bestIdx = i; bestReverse = false; }
+      if (de < bestDist) { bestDist = de; bestIdx = i; bestReverse = true; }
+    }
+
+    let chosen = remaining.splice(bestIdx, 1)[0];
+    if (bestReverse) {
+      const rev = [...chosen.segments].reverse().map((seg, i) => ({ ...seg, penDown: i > 0 }));
+      chosen = { ...chosen, segments: rev };
+    }
+
+    sorted.push(chosen);
+    const last = chosen.segments[chosen.segments.length - 1];
+    curX = last.x;
+    curY = last.y;
+  }
+
+  return sorted;
+}
+
+// After nearest-neighbor sort, keep the pen down between consecutive paths whose
+// endpoints are within `threshold` canvas units — bridging the small gaps that
+// appear between nearly-touching strokes without lifting for true whitespace.
+function bridgeNearbyPaths(paths: Path[], threshold: number): Path[] {
+  if (paths.length <= 1) return paths;
+  const t2 = threshold * threshold;
+  const result = paths.slice();
+  for (let i = 0; i < result.length - 1; i++) {
+    const end = result[i].segments[result[i].segments.length - 1];
+    const start = result[i + 1].segments[0];
+    const dx = end.x - start.x, dy = end.y - start.y;
+    if (dx * dx + dy * dy <= t2) {
+      const segs = result[i + 1].segments.map((seg, idx) =>
+        idx === 0 ? { ...seg, penDown: true } : seg
+      );
+      result[i + 1] = { ...result[i + 1], segments: segs };
+    }
+  }
+  return result;
 }
 
 function edgePath(

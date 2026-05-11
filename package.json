@@ -1,7 +1,7 @@
 {
   "name": "bachin-open-controller",
   "productName": "Bachin Open Controller",
-  "version": "0.0.6",
+  "version": "0.0.9",
   "description": "Open-source controller for GRBL-based Bachin pen plotters and drawing machines",
   "main": "dist/electron/main.js",
   "homepage": "./",
