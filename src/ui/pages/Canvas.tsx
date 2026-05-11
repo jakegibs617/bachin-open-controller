@@ -17,6 +17,13 @@ import { formatLength, fromMillimeters, toMillimeters, UNIT_LABELS } from '../..
 import { SVGParser, normalizePathToMachineCoordinates } from '../../importers/svg';
 import { smoothPaths, traceRasterToPaths } from '../../importers/raster';
 import { GCodeGenerator } from '../../core/gcode';
+import {
+  MAX_ACTION_SPEED,
+  MIN_ACTION_SPEED,
+  defaultActionSpeedSettings,
+  loadActionSpeedSettings,
+  saveActionSpeedSettings
+} from '../settings/actionSpeeds';
 import ta4Profile from '../../../profiles/ta4.json';
 import { PreparedJob } from '../App';
 
@@ -37,6 +44,13 @@ const canvas: CanvasModel = {
 type RasterMode = 'outline' | 'fill' | 'centerline' | 'dither';
 type GridUnit = 'mm' | 'cm' | 'in';
 
+const RASTER_MODE_HINTS: Record<RasterMode, string> = {
+  outline: 'Traces the outer silhouette of dark regions. Best for line art, logos, and images with clear edges.',
+  fill: 'Fills dark regions with horizontal scan lines. Good for solid shapes that need a hatched shading effect.',
+  centerline: 'Finds the skeleton midline of strokes. Ideal for handwriting, technical drawings, and thin lines.',
+  dither: 'Converts gray tones to dot patterns using ordered dithering. Best for photos and continuous-tone images.',
+};
+
 const RASTER_TRACE_SIZES = {
   draft: 320,
   normal: 512,
@@ -54,11 +68,29 @@ const GRID_SPACING: Record<GridUnit, { minor: number; major: number }> = {
 };
 
 const ROTATE_HANDLE_DIST = 10; // mm from top edge to rotation handle
-const DEFAULT_PEN_SPEED = Number(ta4Profile.penDownCommand.match(/\bF(-?\d+(?:\.\d+)?)\b/i)?.[1] ?? ta4Profile.drawingSpeed);
+const DEFAULT_ACTION_SPEEDS = defaultActionSpeedSettings(profile);
 type DragMode = 'move' | 'resize' | 'rotate';
 
 function displayLengthInput(valueMm: number, units: LengthUnit, precision: number = 4): number {
   return Number(fromMillimeters(valueMm, units).toFixed(precision));
+}
+
+function speedPrecision(units: LengthUnit): number {
+  if (units === 'mm') return 0;
+  if (units === 'ft') return 3;
+  return 2;
+}
+
+function formatSpeed(valueMm: number, units: LengthUnit): string {
+  return `${formatLength(valueMm, units, speedPrecision(units))}/min`;
+}
+
+function getBrowserStorage(): Storage | undefined {
+  try {
+    return typeof window === 'undefined' ? undefined : window.localStorage;
+  } catch {
+    return undefined;
+  }
 }
 
 interface DragState {
@@ -71,6 +103,57 @@ interface DragState {
   rawBounds: BoundingBox;
   center: { x: number; y: number }; // raw image center
 }
+
+interface ActionSpeedSliderProps {
+  id: string;
+  label: string;
+  valueMm: number;
+  optimalMm: number;
+  units: LengthUnit;
+  onChange: (valueMm: number) => void;
+}
+
+const ActionSpeedSlider: React.FC<ActionSpeedSliderProps> = ({
+  id,
+  label,
+  valueMm,
+  optimalMm,
+  units,
+  onChange
+}) => {
+  const optimalPercent = ((optimalMm - MIN_ACTION_SPEED) / (MAX_ACTION_SPEED - MIN_ACTION_SPEED)) * 100;
+
+  return (
+    <div className="speed-slider-control">
+      <div className="speed-slider-heading">
+        <label htmlFor={id}>{label}</label>
+        <output htmlFor={id}>{formatSpeed(valueMm, units)}</output>
+      </div>
+      <div className="speed-slider-track">
+        <input
+          id={id}
+          type="range"
+          min={MIN_ACTION_SPEED}
+          max={MAX_ACTION_SPEED}
+          step="1"
+          value={valueMm}
+          aria-valuetext={formatSpeed(valueMm, units)}
+          onChange={(event) => onChange(Number(event.target.value))}
+        />
+        <span
+          className="speed-optimal-marker"
+          style={{ left: `${optimalPercent}%` }}
+          title={`Optimal ${formatSpeed(optimalMm, units)}`}
+        />
+      </div>
+      <div className="speed-slider-scale">
+        <span>Min {formatSpeed(MIN_ACTION_SPEED, units)}</span>
+        <span>Optimal {formatSpeed(optimalMm, units)}</span>
+        <span>Max {formatSpeed(MAX_ACTION_SPEED, units)}</span>
+      </div>
+    </div>
+  );
+};
 
 function normalizePaths(paths: Path[]): Path[] {
   if (paths.length === 0) {
@@ -220,6 +303,10 @@ function buildProgressStrokes(gcode: string[], origin: string): ProgressStroke[]
 }
 
 export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJobChange, jobProgress }) => {
+  const [initialActionSpeeds] = React.useState(() => loadActionSpeedSettings(
+    getBrowserStorage(),
+    DEFAULT_ACTION_SPEEDS
+  ));
   const [message, setMessage] = React.useState('Import an SVG path file to prepare a TA4 plotting job.');
   const [error, setError] = React.useState<string | null>(null);
   const [rasterMode, setRasterMode] = React.useState<RasterMode>('outline');
@@ -231,9 +318,9 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const [adaptiveThreshold, setAdaptiveThreshold] = React.useState(false);
   const [smoothingTolerance, setSmoothingTolerance] = React.useState(0);
   const [invertRaster, setInvertRaster] = React.useState(false);
-  const [travelSpeed, setTravelSpeed] = React.useState(profile.travelSpeed);
-  const [drawingSpeed, setDrawingSpeed] = React.useState(profile.drawingSpeed);
-  const [penSpeed, setPenSpeed] = React.useState(DEFAULT_PEN_SPEED);
+  const [travelSpeed, setTravelSpeed] = React.useState(initialActionSpeeds.travelSpeed);
+  const [drawingSpeed, setDrawingSpeed] = React.useState(initialActionSpeeds.drawingSpeed);
+  const [penSpeed, setPenSpeed] = React.useState(initialActionSpeeds.penSpeed);
 
   const [showGrid, setShowGrid] = React.useState(true);
   const [gridUnit, setGridUnit] = React.useState<GridUnit>('cm');
@@ -482,7 +569,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   };
 
   const handleSpeedChange = (kind: 'travel' | 'drawing' | 'pen', value: number) => {
-    const nextValue = Math.max(1, Math.min(12000, Number.isFinite(value) ? value : 1));
+    const nextValue = Math.max(MIN_ACTION_SPEED, Math.min(MAX_ACTION_SPEED, Number.isFinite(value) ? value : MIN_ACTION_SPEED));
     if (kind === 'travel') {
       setTravelSpeed(nextValue);
     } else if (kind === 'drawing') {
@@ -493,13 +580,18 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   };
 
   React.useEffect(() => {
+    saveActionSpeedSettings(getBrowserStorage(), {
+      travelSpeed,
+      drawingSpeed,
+      penSpeed
+    });
     applyTransformAndRegenerate(imageScaleRef.current, offsetXRef.current, offsetYRef.current, rotationRef.current);
   }, [travelSpeed, drawingSpeed, penSpeed]);
 
   const handleResetSpeeds = () => {
-    setTravelSpeed(profile.travelSpeed);
-    setDrawingSpeed(profile.drawingSpeed);
-    setPenSpeed(DEFAULT_PEN_SPEED);
+    setTravelSpeed(DEFAULT_ACTION_SPEEDS.travelSpeed);
+    setDrawingSpeed(DEFAULT_ACTION_SPEEDS.drawingSpeed);
+    setPenSpeed(DEFAULT_ACTION_SPEEDS.penSpeed);
   };
 
   // --- Import and clear ---
@@ -617,7 +709,6 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
   const dragMode = dragState.current?.mode;
   const unitLabel = UNIT_LABELS[units];
-  const speedUnitLabel = `${unitLabel}/min`;
 
   return (
     <div className="canvas-page">
@@ -736,44 +827,34 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           <input type="checkbox" checked={invertRaster} onChange={(event) => setInvertRaster(event.target.checked)} />
           Invert
         </label>
+        <span className="raster-settings-hint">{RASTER_MODE_HINTS[rasterMode]}</span>
       </section>
 
       <section className="action-speed-settings" aria-label="Action speed settings">
-        <label htmlFor="travel-speed">Travel</label>
-        <input
+        <ActionSpeedSlider
           id="travel-speed"
-          type="number"
-          min={displayLengthInput(1, units)}
-          max={displayLengthInput(12000, units)}
-          step={displayLengthInput(100, units)}
-          value={displayLengthInput(travelSpeed, units)}
-          onChange={(event) => handleSpeedChange('travel', toMillimeters(Number(event.target.value), units))}
+          label="Travel"
+          valueMm={travelSpeed}
+          optimalMm={DEFAULT_ACTION_SPEEDS.travelSpeed}
+          units={units}
+          onChange={(valueMm) => handleSpeedChange('travel', valueMm)}
         />
-        <span className="unit-label">{speedUnitLabel}</span>
-
-        <label htmlFor="drawing-speed">Draw</label>
-        <input
+        <ActionSpeedSlider
           id="drawing-speed"
-          type="number"
-          min={displayLengthInput(1, units)}
-          max={displayLengthInput(12000, units)}
-          step={displayLengthInput(100, units)}
-          value={displayLengthInput(drawingSpeed, units)}
-          onChange={(event) => handleSpeedChange('drawing', toMillimeters(Number(event.target.value), units))}
+          label="Draw"
+          valueMm={drawingSpeed}
+          optimalMm={DEFAULT_ACTION_SPEEDS.drawingSpeed}
+          units={units}
+          onChange={(valueMm) => handleSpeedChange('drawing', valueMm)}
         />
-        <span className="unit-label">{speedUnitLabel}</span>
-
-        <label htmlFor="pen-speed">Pen Z</label>
-        <input
+        <ActionSpeedSlider
           id="pen-speed"
-          type="number"
-          min={displayLengthInput(1, units)}
-          max={displayLengthInput(12000, units)}
-          step={displayLengthInput(100, units)}
-          value={displayLengthInput(penSpeed, units)}
-          onChange={(event) => handleSpeedChange('pen', toMillimeters(Number(event.target.value), units))}
+          label="Pen Z"
+          valueMm={penSpeed}
+          optimalMm={DEFAULT_ACTION_SPEEDS.penSpeed}
+          units={units}
+          onChange={(valueMm) => handleSpeedChange('pen', valueMm)}
         />
-        <span className="unit-label">{speedUnitLabel}</span>
 
         <button type="button" className="toolbar-btn" onClick={handleResetSpeeds}>
           Reset speeds

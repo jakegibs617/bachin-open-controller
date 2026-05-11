@@ -279,149 +279,238 @@ export const Controls: React.FC<ControlsProps> = ({
   return (
     <div className="controls-page">
 
-      {/* ── Connection ─────────────────────────────────── */}
-      <div className="card">
-        {connected ? (
-          <div className="connection-bar">
-            <span className="conn-dot on" />
-            <span className="conn-text">{selectedPort} · {baudRate} baud</span>
-            <button type="button" className="btn-text" disabled={busy} onClick={disconnect}>
-              Disconnect
+      <div className="controls-main">
+
+        {/* ── Connection ─────────────────────────────────── */}
+        <div className="card">
+          {connected ? (
+            <div className="connection-bar">
+              <span className="conn-dot on" />
+              <span className="conn-text">{selectedPort} · {baudRate} baud</span>
+              <button type="button" className="btn-text" disabled={busy} onClick={disconnect}>
+                Disconnect
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="card-label">Connection</div>
+              <div className="field-row">
+                <label htmlFor="serial-port">Serial port</label>
+                <select
+                  id="serial-port"
+                  value={selectedPort}
+                  disabled={!apiAvailable || busy}
+                  onChange={(e) => setSelectedPort(e.target.value)}
+                >
+                  {ports.length === 0 && <option value="">No ports found</option>}
+                  {ports.map((port) => (
+                    <option key={port.path} value={port.path}>
+                      {port.manufacturer ? `${port.path} — ${port.manufacturer}` : port.path}
+                    </option>
+                  ))}
+                </select>
+                <button type="button" disabled={!apiAvailable || busy} onClick={refreshPorts}>
+                  Refresh
+                </button>
+              </div>
+              <div className="field-row">
+                <label htmlFor="baud-rate">Baud rate</label>
+                <input
+                  id="baud-rate"
+                  type="number"
+                  min="9600"
+                  step="9600"
+                  value={baudRate}
+                  disabled={busy}
+                  onChange={(e) => setBaudRate(Number(e.target.value))}
+                />
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={!apiAvailable || busy || !selectedPort}
+                  onClick={connect}
+                >
+                  Connect
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* ── Pen & machine ──────────────────────────────── */}
+        <div className="card">
+          <div className="card-label">Pen</div>
+          <div className={`pen-state ${penDown ? 'down' : 'up'}`}>
+            <span>Status</span>
+            <strong>{penDown ? 'Down — holding' : 'Up'}</strong>
+          </div>
+          <div className="pen-actions">
+            <button
+              type="button"
+              className="pen-button down"
+              disabled={!connected || busy || penDown}
+              onClick={lowerPen}
+            >
+              Down
+            </button>
+            <button
+              type="button"
+              className="pen-button up"
+              disabled={!connected || busy || !penDown}
+              onClick={liftPen}
+            >
+              Up
             </button>
           </div>
-        ) : (
-          <>
-            <div className="card-label">Connection</div>
-            <div className="field-row">
-              <label htmlFor="serial-port">Serial port</label>
-              <select
-                id="serial-port"
-                value={selectedPort}
-                disabled={!apiAvailable || busy}
-                onChange={(e) => setSelectedPort(e.target.value)}
-              >
-                {ports.length === 0 && <option value="">No ports found</option>}
-                {ports.map((port) => (
-                  <option key={port.path} value={port.path}>
-                    {port.manufacturer ? `${port.path} — ${port.manufacturer}` : port.path}
-                  </option>
-                ))}
-              </select>
-              <button type="button" disabled={!apiAvailable || busy} onClick={refreshPorts}>
-                Refresh
-              </button>
-            </div>
-            <div className="field-row">
-              <label htmlFor="baud-rate">Baud rate</label>
-              <input
-                id="baud-rate"
-                type="number"
-                min="9600"
-                step="9600"
-                value={baudRate}
-                disabled={busy}
-                onChange={(e) => setBaudRate(Number(e.target.value))}
-              />
-              <button
-                type="button"
-                className="btn-primary"
-                disabled={!apiAvailable || busy || !selectedPort}
-                onClick={connect}
-              >
-                Connect
-              </button>
-            </div>
-          </>
-        )}
+          <div className="field-row origin-row">
+            <button type="button" disabled={!connected || busy} onClick={returnToOrigin}>
+              Return to Origin
+            </button>
+            <button type="button" className="stop-button" disabled={!connected || busy} onClick={stopMachine}>
+              Stop
+            </button>
+          </div>
+        </div>
+
+        {/* ── Job ────────────────────────────────────────── */}
+        <div className="card">
+          <div className="card-label">Job</div>
+          {preparedJob ? (
+            <>
+              <dl className="job-readout">
+                <div><dt>File</dt><dd>{preparedJob.name}</dd></div>
+                <div><dt>G-code lines</dt><dd>{preparedJob.gcode.length}</dd></div>
+              </dl>
+              {preparedJob.warnings.length > 0 && (
+                <ul className="warning-list">
+                  {preparedJob.warnings.map((w, i) => (
+                    <li key={`${w.message}-${i}`} className={w.severity}>{w.message}</li>
+                  ))}
+                </ul>
+              )}
+              <div className="field-row">
+                {streaming ? (
+                  <>
+                    {paused ? (
+                      <button type="button" className="btn-primary" onClick={resumeJob}>Resume</button>
+                    ) : (
+                      <button type="button" onClick={pauseJob}>Pause</button>
+                    )}
+                    <button type="button" onClick={cancelJob}>Cancel</button>
+                    <button type="button" onClick={cancelAndReturnToOrigin}>Cancel + Origin</button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={busy || jobHasOutOfBoundsWarning}
+                    onClick={runPreparedJob}
+                  >
+                    Run Artwork Job
+                  </button>
+                )}
+                <button type="button" disabled={streaming} onClick={onClearPreparedJob}>
+                  Clear Job
+                </button>
+              </div>
+              {jobRunDisabledReason && <p className="hint" style={{ marginTop: 8 }}>{jobRunDisabledReason}</p>}
+              {progress && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ background: '#e5e7eb', borderRadius: 4, height: 8, overflow: 'hidden' }}>
+                    <div style={{
+                      background: '#2563eb',
+                      height: '100%',
+                      width: `${Math.min(100, Math.round((progress.sent / progress.total) * 100))}%`,
+                      transition: 'width 0.3s'
+                    }} />
+                  </div>
+                  <p className="progress-label" style={{ marginTop: 4 }}>
+                    {progress.sent} / {progress.total} lines · {formatEta(progress, streamStartRef.current)}
+                  </p>
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="hint">Import artwork on the Artwork tab to prepare a job.</p>
+          )}
+        </div>
+
       </div>
 
-      {/* ── Pen & machine ──────────────────────────────── */}
-      <div className="card">
-        <div className="card-label">Pen</div>
-        <div className={`pen-state ${penDown ? 'down' : 'up'}`}>
-          <span>Status</span>
-          <strong>{penDown ? 'Down — holding' : 'Up'}</strong>
-        </div>
-        <div className="pen-actions">
-          <button
-            type="button"
-            className="pen-button down"
-            disabled={!connected || busy || penDown}
-            onClick={lowerPen}
-          >
-            Down
-          </button>
-          <button
-            type="button"
-            className="pen-button up"
-            disabled={!connected || busy || !penDown}
-            onClick={liftPen}
-          >
-            Up
-          </button>
-        </div>
-        <div className="field-row origin-row">
-          <button type="button" disabled={!connected || busy} onClick={returnToOrigin}>
-            Return to Origin
-          </button>
-          <button type="button" className="stop-button" disabled={!connected || busy} onClick={stopMachine}>
-            Stop
-          </button>
-        </div>
-      </div>
+      <div className="controls-setup">
+        <p className="section-label">Setup</p>
 
-      {/* ── Jog ────────────────────────────────────────── */}
-      <div className="card">
-        <div className="card-label">Jog</div>
-        <dl className="jog-readout">
-          <div><dt>X offset</dt><dd>{formatLength(jogOffset.x, units)}</dd></div>
-          <div><dt>Y offset</dt><dd>{formatLength(jogOffset.y, units)}</dd></div>
-        </dl>
-        <div className="field-row">
-          <label htmlFor="jog-step">Step ({unitLabel})</label>
-          <input
-            id="jog-step"
-            type="number"
-            min={displayLengthInput(0.1, units)}
-            max={displayLengthInput(10, units)}
-            step={displayLengthInput(0.1, units)}
-            value={displayLengthInput(jogStep, units)}
-            disabled={busy || streaming}
-            onChange={(e) => setJogStep(toMillimeters(Number(e.target.value), units))}
-          />
-          <button type="button" disabled={busy || streaming} onClick={() => setJogOffset({ x: 0, y: 0 })}>
-            Zero
-          </button>
-        </div>
-        <div className="jog-pad" aria-label="Jog controls">
-          <button type="button" disabled={!connected || busy || streaming} onClick={() => jog(0, safeJogStep)}>↑</button>
-          <button type="button" disabled={!connected || busy || streaming} onClick={() => jog(-safeJogStep, 0)}>←</button>
-          <button type="button" disabled={!connected || busy || streaming} onClick={() => jog(safeJogStep, 0)}>→</button>
-          <button type="button" disabled={!connected || busy || streaming} onClick={() => jog(0, -safeJogStep)}>↓</button>
-        </div>
-      </div>
-
-      {/* ── Job ────────────────────────────────────────── */}
-      <div className="card">
-        <div className="card-label">Job</div>
-        {preparedJob ? (
-          <>
-            <dl className="job-readout">
-              <div><dt>File</dt><dd>{preparedJob.name}</dd></div>
-              <div><dt>G-code lines</dt><dd>{preparedJob.gcode.length}</dd></div>
+        {/* ── Jog ────────────────────────────────────────── */}
+        <details className="card">
+          <summary>Jog</summary>
+          <div className="card-body">
+            <dl className="jog-readout">
+              <div><dt>X offset</dt><dd>{formatLength(jogOffset.x, units)}</dd></div>
+              <div><dt>Y offset</dt><dd>{formatLength(jogOffset.y, units)}</dd></div>
             </dl>
-            {preparedJob.warnings.length > 0 && (
-              <ul className="warning-list">
-                {preparedJob.warnings.map((w, i) => (
-                  <li key={`${w.message}-${i}`} className={w.severity}>{w.message}</li>
-                ))}
-              </ul>
-            )}
+            <div className="field-row">
+              <label htmlFor="jog-step">Step ({unitLabel})</label>
+              <input
+                id="jog-step"
+                type="number"
+                min={displayLengthInput(0.1, units)}
+                max={displayLengthInput(10, units)}
+                step={displayLengthInput(0.1, units)}
+                value={displayLengthInput(jogStep, units)}
+                disabled={busy || streaming}
+                onChange={(e) => setJogStep(toMillimeters(Number(e.target.value), units))}
+              />
+              <button type="button" disabled={busy || streaming} onClick={() => setJogOffset({ x: 0, y: 0 })}>
+                Zero
+              </button>
+            </div>
+            <div className="jog-pad" aria-label="Jog controls">
+              <button type="button" disabled={!connected || busy || streaming} onClick={() => jog(0, safeJogStep)}>↑</button>
+              <button type="button" disabled={!connected || busy || streaming} onClick={() => jog(-safeJogStep, 0)}>←</button>
+              <button type="button" disabled={!connected || busy || streaming} onClick={() => jog(safeJogStep, 0)}>→</button>
+              <button type="button" disabled={!connected || busy || streaming} onClick={() => jog(0, -safeJogStep)}>↓</button>
+            </div>
+          </div>
+        </details>
+
+        {/* ── Perimeter test ─────────────────────────────── */}
+        <details className="card">
+          <summary>Perimeter Test</summary>
+          <div className="card-body">
+            <p className="hint" style={{ marginBottom: 12 }}>
+              Safe area is {formatLength(180, units)} right x {formatLength(210, units)} down from origin.
+            </p>
+            <div className="field-row">
+              <label htmlFor="perimeter-width">Width ({unitLabel})</label>
+              <input
+                id="perimeter-width"
+                type="number"
+                min={displayLengthInput(10, units)}
+                max={displayLengthInput(180, units)}
+                step={displayLengthInput(1, units)}
+                value={displayLengthInput(perimeterWidth, units)}
+                disabled={streaming}
+                onChange={(e) => setPerimeterWidth(toMillimeters(Number(e.target.value), units))}
+              />
+            </div>
+            <div className="field-row">
+              <label htmlFor="perimeter-height">Height ({unitLabel})</label>
+              <input
+                id="perimeter-height"
+                type="number"
+                min={displayLengthInput(10, units)}
+                max={displayLengthInput(210, units)}
+                step={displayLengthInput(1, units)}
+                value={displayLengthInput(perimeterHeight, units)}
+                disabled={streaming}
+                onChange={(e) => setPerimeterHeight(toMillimeters(Number(e.target.value), units))}
+              />
+            </div>
             <div className="field-row">
               {streaming ? (
                 <>
                   {paused ? (
-                    <button type="button" className="btn-primary" onClick={resumeJob}>Resume</button>
+                    <button type="button" onClick={resumeJob}>Resume</button>
                   ) : (
                     <button type="button" onClick={pauseJob}>Pause</button>
                   )}
@@ -429,90 +518,14 @@ export const Controls: React.FC<ControlsProps> = ({
                   <button type="button" onClick={cancelAndReturnToOrigin}>Cancel + Origin</button>
                 </>
               ) : (
-                <button
-                  type="button"
-                  className="btn-primary"
-                  disabled={busy || jobHasOutOfBoundsWarning}
-                  onClick={runPreparedJob}
-                >
-                  Run Artwork Job
+                <button type="button" disabled={!connected || busy} onClick={runPerimeterTest}>
+                  Run Perimeter Test
                 </button>
               )}
-              <button type="button" disabled={streaming} onClick={onClearPreparedJob}>
-                Clear Job
-              </button>
             </div>
-            {jobRunDisabledReason && <p className="hint" style={{ marginTop: 8 }}>{jobRunDisabledReason}</p>}
-            {progress && (
-              <div style={{ marginTop: 10 }}>
-                <div style={{ background: '#e5e7eb', borderRadius: 4, height: 8, overflow: 'hidden' }}>
-                  <div style={{
-                    background: '#2563eb',
-                    height: '100%',
-                    width: `${Math.min(100, Math.round((progress.sent / progress.total) * 100))}%`,
-                    transition: 'width 0.3s'
-                  }} />
-                </div>
-                <p className="progress-label" style={{ marginTop: 4 }}>
-                  {progress.sent} / {progress.total} lines · {formatEta(progress, streamStartRef.current)}
-                </p>
-              </div>
-            )}
-          </>
-        ) : (
-          <p className="hint">Import artwork on the Artwork tab to prepare a job.</p>
-        )}
-      </div>
+          </div>
+        </details>
 
-      {/* ── Perimeter test ─────────────────────────────── */}
-      <div className="card">
-        <div className="card-label">Perimeter Test</div>
-        <p className="hint" style={{ marginBottom: 12 }}>
-          Safe area is {formatLength(180, units)} right x {formatLength(210, units)} down from origin.
-        </p>
-        <div className="field-row">
-          <label htmlFor="perimeter-width">Width ({unitLabel})</label>
-          <input
-            id="perimeter-width"
-            type="number"
-            min={displayLengthInput(10, units)}
-            max={displayLengthInput(180, units)}
-            step={displayLengthInput(1, units)}
-            value={displayLengthInput(perimeterWidth, units)}
-            disabled={streaming}
-            onChange={(e) => setPerimeterWidth(toMillimeters(Number(e.target.value), units))}
-          />
-        </div>
-        <div className="field-row">
-          <label htmlFor="perimeter-height">Height ({unitLabel})</label>
-          <input
-            id="perimeter-height"
-            type="number"
-            min={displayLengthInput(10, units)}
-            max={displayLengthInput(210, units)}
-            step={displayLengthInput(1, units)}
-            value={displayLengthInput(perimeterHeight, units)}
-            disabled={streaming}
-            onChange={(e) => setPerimeterHeight(toMillimeters(Number(e.target.value), units))}
-          />
-        </div>
-        <div className="field-row">
-          {streaming ? (
-            <>
-              {paused ? (
-                <button type="button" onClick={resumeJob}>Resume</button>
-              ) : (
-                <button type="button" onClick={pauseJob}>Pause</button>
-              )}
-              <button type="button" onClick={cancelJob}>Cancel</button>
-              <button type="button" onClick={cancelAndReturnToOrigin}>Cancel + Origin</button>
-            </>
-          ) : (
-            <button type="button" disabled={!connected || busy} onClick={runPerimeterTest}>
-              Run Perimeter Test
-            </button>
-          )}
-        </div>
       </div>
 
       <p className="status-message">{paused ? 'Paused.' : busy || streaming ? 'Working…' : message}</p>

@@ -165,11 +165,35 @@
     }
 
     /* ── Page max-widths ───────────────────────────────── */
-    .controls-page,
     .canvas-page,
     .settings-page {
       width: min(100%, 820px);
       margin: 0 auto;
+    }
+
+    .controls-page {
+      width: min(100%, 960px);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0 20px;
+      align-items: start;
+    }
+
+    .controls-main,
+    .controls-setup {
+      min-width: 0;
+    }
+
+    .controls-page > .status-message,
+    .controls-page > .error-message {
+      grid-column: 1 / -1;
+    }
+
+    @media (max-width: 620px) {
+      .controls-page {
+        grid-template-columns: 1fr;
+      }
     }
 
     /* ── Card ──────────────────────────────────────────── */
@@ -525,10 +549,10 @@
     }
 
     .action-speed-settings {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px 10px;
-      align-items: center;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(180px, 1fr)) auto;
+      gap: 12px;
+      align-items: end;
       padding: 10px 14px;
       background: var(--surface-low);
       border-radius: var(--r-sm);
@@ -536,19 +560,76 @@
       border: 1px solid var(--outline-faint);
     }
 
-    .action-speed-settings label {
+    .speed-slider-control {
+      min-width: 0;
+      display: grid;
+      gap: 6px;
+    }
+
+    .speed-slider-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .action-speed-settings label,
+    .speed-slider-heading output {
       font-size: 12px;
       font-weight: 600;
+    }
+
+    .action-speed-settings label {
       color: var(--on-surface-sub);
     }
 
-    .action-speed-settings input[type="number"] {
-      width: 82px;
-      padding: 4px 6px;
-      border: 1px solid var(--outline);
-      border-radius: var(--r-sm);
-      background: var(--surface);
+    .speed-slider-heading output {
       color: var(--on-surface);
+      white-space: nowrap;
+    }
+
+    .speed-slider-track {
+      position: relative;
+      height: 24px;
+      display: flex;
+      align-items: center;
+    }
+
+    .action-speed-settings input[type="range"] {
+      width: 100%;
+      margin: 0;
+      accent-color: var(--primary);
+    }
+
+    .speed-optimal-marker {
+      position: absolute;
+      top: 3px;
+      width: 2px;
+      height: 18px;
+      border-radius: var(--r-full);
+      background: var(--on-surface-sub);
+      pointer-events: none;
+      transform: translateX(-50%);
+    }
+
+    .speed-slider-scale {
+      display: flex;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 10px;
+      color: var(--on-surface-sub);
+      line-height: 1.2;
+    }
+
+    .speed-slider-scale span {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    @media (max-width: 780px) {
+      .action-speed-settings {
+        grid-template-columns: 1fr;
+      }
     }
 
     /* ── SVG canvas preview ────────────────────────────── */
@@ -643,6 +724,65 @@
       outline: 2px solid var(--primary);
       outline-offset: -1px;
       border-color: transparent;
+    }
+
+    /* ── Section group label ───────────────────────────── */
+    .section-label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--on-surface-sub);
+      margin-bottom: 6px;
+      margin-top: 4px;
+      padding: 0 2px;
+    }
+
+    /* ── Collapsible card (details / summary) ──────────── */
+    details.card { padding: 0; overflow: hidden; }
+
+    details.card > summary {
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      user-select: none;
+      padding: 14px 20px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.7px;
+      text-transform: uppercase;
+      color: var(--on-surface-sub);
+    }
+
+    details.card > summary::-webkit-details-marker { display: none; }
+    details.card > summary::marker { display: none; }
+
+    details.card > summary::after {
+      content: '▸';
+      font-size: 11px;
+      opacity: 0.5;
+      transition: transform 0.15s;
+    }
+
+    details[open].card > summary::after { transform: rotate(90deg); }
+
+    details[open].card > summary {
+      border-bottom: 1px solid var(--outline-faint);
+    }
+
+    .card-body { padding: 16px 20px; }
+
+    /* ── Raster mode hint ──────────────────────────────── */
+    .raster-settings-hint {
+      flex: 0 0 100%;
+      font-size: 12px;
+      color: var(--on-surface-sub);
+      line-height: 1.4;
+      padding-top: 6px;
+      margin-top: 2px;
+      border-top: 1px solid var(--outline-faint);
     }
   </style>
 </head>
