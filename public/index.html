@@ -20,6 +20,9 @@
       --on-surface-sub:    #5f6c72;
       --outline:           #c0cad2;
       --outline-faint:     #dde3e9;
+      --control-bg:        #ffffff;
+      --progress-track:    #e5e7eb;
+      --focus-ring:        #5b7fa3;
 
       --success:           #1f7a4d;
       --success-surface:   #eef8f2;
@@ -27,6 +30,13 @@
       --danger-dim:        #9b1f18;
       --pen-up:            #8a3c24;
       --warn-fg:           #8a5a00;
+      --accent-blue:       #2563eb;
+      --canvas-paper:      #ffffff;
+      --canvas-border:     #d4dce0;
+      --canvas-grid-minor: #dce2e8;
+      --canvas-grid-major: #b8c4ce;
+      --plot-done:         #16a34a;
+      --plot-pending:      #9ca3af;
 
       --r-sm:  6px;
       --r-md:  12px;
@@ -34,6 +44,43 @@
 
       --shadow-sm: 0 1px 2px rgba(0,0,0,0.10), 0 1px 4px rgba(0,0,0,0.07);
       --shadow-md: 0 2px 4px rgba(0,0,0,0.10), 0 4px 10px rgba(0,0,0,0.08);
+    }
+
+    .app[data-theme="dark"] {
+      color-scheme: dark;
+      --primary:           #8fb6df;
+      --primary-dim:       #6f9bca;
+      --on-primary:        #061421;
+      --primary-container: #1b344a;
+
+      --surface:           #18212b;
+      --surface-low:       #111922;
+      --surface-mid:       #243140;
+      --background:        #0d1218;
+      --on-surface:        #edf3f8;
+      --on-surface-sub:    #a8b6c2;
+      --outline:           #435363;
+      --outline-faint:     #2b3946;
+      --control-bg:        #101821;
+      --progress-track:    #263341;
+      --focus-ring:        #9fc4ea;
+
+      --success:           #5fd08f;
+      --success-surface:   #183225;
+      --danger:            #ff8f86;
+      --danger-dim:        #e06f67;
+      --pen-up:            #d89272;
+      --warn-fg:           #e7bd64;
+      --accent-blue:       #8bb8ff;
+      --canvas-paper:      #f8fafc;
+      --canvas-border:     #53606b;
+      --canvas-grid-minor: #d7dde3;
+      --canvas-grid-major: #9aa7b3;
+      --plot-done:         #22c55e;
+      --plot-pending:      #7d8791;
+
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.35), 0 1px 6px rgba(0,0,0,0.25);
+      --shadow-md: 0 2px 4px rgba(0,0,0,0.35), 0 6px 16px rgba(0,0,0,0.28);
     }
 
     /* ── Reset & base ──────────────────────────────────── */
@@ -63,7 +110,13 @@
     }
 
     /* ── App shell ─────────────────────────────────────── */
-    .app { display: flex; flex-direction: column; height: 100%; }
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background: var(--background);
+      color: var(--on-surface);
+    }
 
     /* ── Top App Bar ───────────────────────────────────── */
     .app-header {
@@ -102,6 +155,48 @@
       display: flex;
       align-items: center;
       gap: 10px;
+    }
+
+    .theme-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 30px;
+      border: 1px solid rgba(255,255,255,0.22);
+      border-radius: var(--r-full);
+      background: rgba(255,255,255,0.10);
+      color: var(--on-primary);
+      padding: 4px 10px 4px 7px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .theme-toggle:hover { background: rgba(255,255,255,0.18); }
+
+    .theme-toggle:focus-visible {
+      outline: 2px solid rgba(255,255,255,0.75);
+      outline-offset: 2px;
+    }
+
+    .theme-toggle-icon {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--on-primary);
+      box-shadow: inset -5px -4px 0 rgba(0,0,0,0.35);
+      flex: 0 0 auto;
+    }
+
+    .app[data-theme="dark"] .theme-toggle-icon {
+      box-shadow: inset 0 0 0 4px rgba(6,20,33,0.95);
+    }
+
+    @media (max-width: 460px) {
+      .app-bar { gap: 10px; }
+      .theme-toggle-text,
+      .conn-chip span:last-child { display: none; }
+      .theme-toggle { padding: 5px 7px; }
     }
 
     /* Connection status chip */
@@ -162,6 +257,7 @@
       flex: 1;
       overflow: auto;
       padding: clamp(16px, 2.5vw, 28px) clamp(14px, 4vw, 40px);
+      background: var(--background);
     }
 
     /* ── Page max-widths ───────────────────────────────── */
@@ -278,13 +374,13 @@
       padding: 7px 10px;
       border: 1px solid var(--outline);
       border-radius: var(--r-sm);
-      background: var(--surface);
+      background: var(--control-bg);
       color: var(--on-surface);
     }
 
     .field-row select:focus,
     .field-row input:focus {
-      outline: 2px solid var(--primary);
+      outline: 2px solid var(--focus-ring);
       outline-offset: -1px;
       border-color: transparent;
     }
@@ -483,7 +579,7 @@
       padding: 5px 8px;
       border: 1px solid var(--outline);
       border-radius: var(--r-sm);
-      background: var(--surface);
+      background: var(--control-bg);
       font-size: 13px;
       color: var(--on-surface);
     }
@@ -531,8 +627,9 @@
       padding: 4px 8px;
       border: 1px solid var(--outline);
       border-radius: var(--r-sm);
-      background: var(--surface);
+      background: var(--control-bg);
       font-size: 13px;
+      color: var(--on-surface);
     }
 
     .raster-settings input[type="range"] {
@@ -638,7 +735,7 @@
       aspect-ratio: 180 / 210;
       margin-inline: auto;
       border: 1px solid var(--outline);
-      background: white;
+      background: var(--canvas-paper);
       display: grid;
       place-content: center;
       gap: 8px;
@@ -682,7 +779,7 @@
       padding: 4px 6px;
       border: 1px solid var(--outline);
       border-radius: var(--r-sm);
-      background: var(--surface);
+      background: var(--control-bg);
       color: var(--on-surface);
     }
 
@@ -716,12 +813,12 @@
       padding: 7px 10px;
       border: 1px solid var(--outline);
       border-radius: var(--r-sm);
-      background: var(--surface);
+      background: var(--control-bg);
       color: var(--on-surface);
     }
 
     .settings-section select:focus {
-      outline: 2px solid var(--primary);
+      outline: 2px solid var(--focus-ring);
       outline-offset: -1px;
       border-color: transparent;
     }
