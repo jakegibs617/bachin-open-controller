@@ -416,9 +416,9 @@ export const Controls: React.FC<ControlsProps> = ({
               {jobRunDisabledReason && <p className="hint" style={{ marginTop: 8 }}>{jobRunDisabledReason}</p>}
               {progress && (
                 <div style={{ marginTop: 10 }}>
-                  <div style={{ background: '#e5e7eb', borderRadius: 4, height: 8, overflow: 'hidden' }}>
+                  <div style={{ background: 'var(--progress-track)', borderRadius: 4, height: 8, overflow: 'hidden' }}>
                     <div style={{
-                      background: '#2563eb',
+                      background: 'var(--accent-blue)',
                       height: '100%',
                       width: `${Math.min(100, Math.round((progress.sent / progress.total) * 100))}%`,
                       transition: 'width 0.3s'
