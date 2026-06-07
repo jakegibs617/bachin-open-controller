@@ -417,7 +417,7 @@ function skeletonToPaths(
     let dirX = 0, dirY = 0;
     let curPixels: Array<{ x: number; y: number }> = [];
 
-    while (true) {
+    while (compSet.size > 0) {
       const eid = pickEdge(curNode, dirX, dirY, compSet);
 
       if (eid === -1) {

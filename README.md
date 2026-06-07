@@ -37,7 +37,7 @@ behavior, user-provided machine settings, and original application code.
 
 ## Getting Started
 
-Prerequisites: [Node.js 18+](https://nodejs.org) and [Git](https://git-scm.com).
+Prerequisites: [Node.js 20+](https://nodejs.org) and [Git](https://git-scm.com).
 
 ```bash
 git clone https://github.com/jakegibs617/bachin-open-controller.git
@@ -62,8 +62,20 @@ before running real jobs.
 Future coding sessions should finish by bumping the package patch version and
 running lint/tests/build (`npm run lint && npm test && npm run build`).
 Verify behavior with `npm run dev`. Do not run `npm run package` as part of
-routine development — the packaged `.exe` is unsigned and Windows Smart App
-Control will block it on most machines.
+routine development unless you need a local distributable. Windows packages are
+unsigned unless built through `package:signed`, and public macOS builds should be
+signed and notarized with Apple Developer credentials.
+
+## Packaging
+
+Local packaging uses Electron Forge:
+
+```bash
+npm run package
+```
+
+On Windows this creates Squirrel and ZIP artifacts. On macOS this creates ZIP and
+DMG artifacts; DMG creation must run on a Mac.
 
 ## Windows Signing
 
