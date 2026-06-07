@@ -754,6 +754,21 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     }
   };
 
+  const shouldLoadAsProject = (file: File): boolean => {
+    const lowerName = file.name.toLowerCase();
+    return lowerName.endsWith('.boc.json') || lowerName.endsWith('.json') || file.type === 'application/json';
+  };
+
+  const handleOpenFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (shouldLoadAsProject(file)) {
+      await handleLoadProject(file);
+      return;
+    }
+
+    await importArtwork(file);
+  };
+
   // --- Import and clear ---
 
   const handleClear = () => {
@@ -773,7 +788,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     setError(null);
   };
 
-  const importSvg = async (file: File | undefined) => {
+  const importArtwork = async (file: File | undefined) => {
     if (!file) return;
     setError(null);
 
@@ -924,19 +939,15 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     <div className="canvas-page">
       <h2>Canvas Preview</h2>
       <section className="canvas-toolbar">
-        <label htmlFor="svg-import">Artwork file</label>
+        <label htmlFor="open-file">Open file</label>
         <input
-          id="svg-import"
+          id="open-file"
           type="file"
-          accept=".svg,.png,.jpg,.jpeg,image/svg+xml,image/png,image/jpeg"
-          onChange={(event) => importSvg(event.target.files?.[0])}
-        />
-        <label htmlFor="plan-import">Plan file</label>
-        <input
-          id="plan-import"
-          type="file"
-          accept=".boc.json,.json,application/json"
-          onChange={(event) => handleLoadProject(event.target.files?.[0])}
+          accept=".boc.json,.json,.svg,.png,.jpg,.jpeg,application/json,image/svg+xml,image/png,image/jpeg"
+          onChange={(event) => {
+            void handleOpenFile(event.target.files?.[0]);
+            event.target.value = '';
+          }}
         />
         <button
           type="button"
