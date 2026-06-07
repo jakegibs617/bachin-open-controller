@@ -27,6 +27,12 @@ import {
 import ta4Profile from '../../../profiles/ta4.json';
 import { PreparedJob } from '../App';
 
+type IpcResult<T = unknown> = { ok: true; data?: T } | { ok: false; error: string };
+
+interface ProjectApi {
+  save: (projectData: unknown, filePath?: string) => Promise<IpcResult>;
+}
+
 interface CanvasProps {
   units: LengthUnit;
   preparedJob: PreparedJob | null;
@@ -43,6 +49,24 @@ const canvas: CanvasModel = {
 };
 type RasterMode = 'outline' | 'fill' | 'centerline' | 'dither';
 type GridUnit = 'mm' | 'cm' | 'in';
+type ArtworkKind = 'svg' | 'raster';
+type RasterSource = {
+  image: CanvasImageSource;
+  width: number;
+  height: number;
+  cleanup: () => void;
+};
+
+function inferImageMimeType(file: File): string {
+  const explicitType = file.type.toLowerCase();
+  if (explicitType.startsWith('image/')) return explicitType;
+
+  const lowerName = file.name.toLowerCase();
+  if (lowerName.endsWith('.png')) return 'image/png';
+  if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) return 'image/jpeg';
+  if (lowerName.endsWith('.svg')) return 'image/svg+xml';
+  return 'application/octet-stream';
+}
 
 const RASTER_MODE_HINTS: Record<RasterMode, string> = {
   outline: 'Traces the outer silhouette of dark regions. Best for line art, logos, and images with clear edges.',
@@ -96,11 +120,63 @@ interface DragState {
   mode: DragMode;
   startPt: { x: number; y: number };
   startOffset: { x: number; y: number };
-  startScale: number;
+  startScaleX: number;
+  startScaleY: number;
   startRotation: number;
   startAngle: number; // radians from display center to startPt (used for rotate)
   rawBounds: BoundingBox;
   center: { x: number; y: number }; // raw image center
+}
+
+interface SavedArtworkMetadata {
+  formatVersion: 1;
+  artworkKind: ArtworkKind;
+  fileName: string;
+  mimeType: string;
+  sourceDataUrl: string;
+  rasterSettings: {
+    mode: RasterMode;
+    detail: RasterDetail;
+    threshold: number;
+    brightness: number;
+    contrast: number;
+    blurRadius: number;
+    adaptiveThreshold: boolean;
+    smoothingTolerance: number;
+    invertRaster: boolean;
+  };
+  actionSpeeds: {
+    travelSpeed: number;
+    drawingSpeed: number;
+    penSpeed: number;
+  };
+}
+
+interface SavedCanvasObject {
+  id: string;
+  type: 'svg_path' | 'raster_image';
+  source: string;
+  transform: {
+    x: number;
+    y: number;
+    scale: number;
+    scaleY: number;
+    rotation: number;
+  };
+  visible: boolean;
+  paths: Path[];
+  metadata: SavedArtworkMetadata;
+}
+
+interface SavedProjectData {
+  id: string;
+  name: string;
+  created: string;
+  machineProfileId: string;
+  units: LengthUnit;
+  canvas: CanvasModel;
+  objects: SavedCanvasObject[];
+  savedAt: string;
 }
 
 interface ActionSpeedSliderProps {
@@ -203,24 +279,26 @@ function computeAllBounds(paths: Path[]): BoundingBox {
 }
 
 // Apply scale (around center), rotation, and translation to all path coordinates.
-// scalePct=100, rotateDeg=0, dx=0, dy=0 is the identity transform.
+// scaleX=100, scaleY=100, rotateDeg=0, dx=0, dy=0 is the identity transform.
 function applyTransform(
   paths: Path[],
   cx: number,
   cy: number,
-  scalePct: number,
+  scaleX: number,
+  scaleY: number,
   dx: number,
   dy: number,
   rotateDeg: number
 ): Path[] {
-  const s = scalePct / 100;
+  const sx = scaleX / 100;
+  const sy = scaleY / 100;
   const rad = (rotateDeg * Math.PI) / 180;
   const cosR = Math.cos(rad);
   const sinR = Math.sin(rad);
 
   const xformPt = (x: number, y: number) => ({
-    x: cx + dx + (x - cx) * s * cosR - (y - cy) * s * sinR,
-    y: cy + dy + (x - cx) * s * sinR + (y - cy) * s * cosR
+    x: cx + dx + (x - cx) * sx * cosR - (y - cy) * sy * sinR,
+    y: cy + dy + (x - cx) * sx * sinR + (y - cy) * sy * cosR
   });
 
   return paths.map((path) => {
@@ -334,15 +412,29 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   // Transform state. Refs mirror state so pointer event handlers avoid stale closures.
   const [offsetX, _setOffsetX] = React.useState(0);
   const [offsetY, _setOffsetY] = React.useState(0);
-  const [imageScale, _setImageScale] = React.useState(100);
+  const [imageScaleX, _setImageScaleX] = React.useState(100);
+  const [imageScaleY, _setImageScaleY] = React.useState(100);
   const [rotation, _setRotation] = React.useState(0);
+  const [artworkKind, setArtworkKind] = React.useState<ArtworkKind>('svg');
+  const [sourceFileName, setSourceFileName] = React.useState('');
+  const [sourceMimeType, setSourceMimeType] = React.useState('');
+  const [sourceDataUrl, setSourceDataUrl] = React.useState('');
+  const [projectId, setProjectId] = React.useState(() => `project-${Date.now()}`);
+  const [projectCreated, setProjectCreated] = React.useState(() => new Date().toISOString());
+  const [projectFilePath, setProjectFilePath] = React.useState<string | undefined>(undefined);
   const offsetXRef = React.useRef(0);
   const offsetYRef = React.useRef(0);
-  const imageScaleRef = React.useRef(100);
+  const imageScaleXRef = React.useRef(100);
+  const imageScaleYRef = React.useRef(100);
   const rotationRef = React.useRef(0);
   const setOffsetX = (v: number) => { offsetXRef.current = v; _setOffsetX(v); };
   const setOffsetY = (v: number) => { offsetYRef.current = v; _setOffsetY(v); };
-  const setImageScale = (v: number) => { imageScaleRef.current = v; _setImageScale(v); };
+  const setImageScaleX = (v: number) => { imageScaleXRef.current = v; _setImageScaleX(v); };
+  const setImageScaleY = (v: number) => { imageScaleYRef.current = v; _setImageScaleY(v); };
+  const setImageScale = (v: number) => {
+    setImageScaleX(v);
+    setImageScaleY(v);
+  };
   const setRotation = (v: number) => { rotationRef.current = v; _setRotation(v); };
 
   const jobNameRef = React.useRef('');
@@ -362,21 +454,26 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const rawBounds = rawPaths ? computeAllBounds(rawPaths) : null;
   const rawCenterX = rawBounds ? (rawBounds.minX + rawBounds.maxX) / 2 : canvas.width / 2;
   const rawCenterY = rawBounds ? (rawBounds.minY + rawBounds.maxY) / 2 : canvas.height / 2;
+  const rawWidth = rawBounds ? rawBounds.maxX - rawBounds.minX : 0;
+  const rawHeight = rawBounds ? rawBounds.maxY - rawBounds.minY : 0;
+  const imageWidth = rawWidth * imageScaleX / 100;
+  const imageHeight = rawHeight * imageScaleY / 100;
 
-  const s = imageScale / 100;
+  const sx = imageScaleX / 100;
+  const sy = imageScaleY / 100;
   const rad = (rotation * Math.PI) / 180;
   const cosR = Math.cos(rad);
   const sinR = Math.sin(rad);
 
   // Maps a point in raw image coordinates to its position in SVG display space
   const toDisplay = (x: number, y: number) => ({
-    x: rawCenterX + offsetX + (x - rawCenterX) * s * cosR - (y - rawCenterY) * s * sinR,
-    y: rawCenterY + offsetY + (x - rawCenterX) * s * sinR + (y - rawCenterY) * s * cosR
+    x: rawCenterX + offsetX + (x - rawCenterX) * sx * cosR - (y - rawCenterY) * sy * sinR,
+    y: rawCenterY + offsetY + (x - rawCenterX) * sx * sinR + (y - rawCenterY) * sy * cosR
   });
 
   // SVG transform for the image <g> — scale then rotate then translate, all around image center
   const imgGroupTransform = rawBounds
-    ? `translate(${rawCenterX + offsetX},${rawCenterY + offsetY}) rotate(${rotation}) scale(${s}) translate(${-rawCenterX},${-rawCenterY})`
+    ? `translate(${rawCenterX + offsetX},${rawCenterY + offsetY}) rotate(${rotation}) scale(${sx},${sy}) translate(${-rawCenterX},${-rawCenterY})`
     : '';
 
   // Four corners of the bounding box in display coordinates (for the selection polygon)
@@ -411,25 +508,26 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     name: string,
     cx: number,
     cy: number,
-    scalePct: number,
+    scaleXPct: number,
+    scaleYPct: number,
     dx: number,
     dy: number,
     rotateDeg: number
   ) => {
-    const transformed = applyTransform(paths, cx, cy, scalePct, dx, dy, rotateDeg);
+    const transformed = applyTransform(paths, cx, cy, scaleXPct, scaleYPct, dx, dy, rotateDeg);
     const generator = new GCodeGenerator(profile, canvas, { travelSpeed, drawingSpeed, penSpeed });
     const result = generator.generate(transformed);
     onPreparedJobChange({ name, paths: transformed, gcode: result.gcode, warnings: result.warnings });
     setMessage(`${name}: ${transformed.length} stroke${transformed.length === 1 ? '' : 's'}, ${result.gcode.length} G-code lines.`);
   };
 
-  const applyTransformAndRegenerate = (scalePct: number, dx: number, dy: number, rotateDeg: number) => {
+  const applyTransformAndRegenerate = (scaleXPct: number, scaleYPct: number, dx: number, dy: number, rotateDeg: number) => {
     const paths = rawPathsRef.current;
     if (!paths) return;
     const bounds = computeAllBounds(paths);
     const cx = (bounds.minX + bounds.maxX) / 2;
     const cy = (bounds.minY + bounds.maxY) / 2;
-    regenerateJob(paths, jobNameRef.current, cx, cy, scalePct, dx, dy, rotateDeg);
+    regenerateJob(paths, jobNameRef.current, cx, cy, scaleXPct, scaleYPct, dx, dy, rotateDeg);
   };
 
   // --- Pointer event handlers ---
@@ -442,7 +540,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       mode: 'move',
       startPt: pt,
       startOffset: { x: offsetXRef.current, y: offsetYRef.current },
-      startScale: imageScaleRef.current,
+      startScaleX: imageScaleXRef.current,
+      startScaleY: imageScaleYRef.current,
       startRotation: rotationRef.current,
       startAngle: 0,
       rawBounds: bounds,
@@ -463,7 +562,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       mode: 'resize',
       startPt: pt,
       startOffset: { x: offsetXRef.current, y: offsetYRef.current },
-      startScale: imageScaleRef.current,
+      startScaleX: imageScaleXRef.current,
+      startScaleY: imageScaleYRef.current,
       startRotation: rotationRef.current,
       startAngle: 0,
       rawBounds: bounds,
@@ -486,7 +586,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       mode: 'rotate',
       startPt: pt,
       startOffset: { x: offsetXRef.current, y: offsetYRef.current },
-      startScale: imageScaleRef.current,
+      startScaleX: imageScaleXRef.current,
+      startScaleY: imageScaleYRef.current,
       startRotation: rotationRef.current,
       startAngle: Math.atan2(pt.y - displayCy, pt.x - displayCx),
       rawBounds: bounds,
@@ -509,19 +610,22 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     } else if (state.mode === 'resize') {
       const displayCx = state.center.x + state.startOffset.x;
       const displayCy = state.center.y + state.startOffset.y;
-      const s0 = state.startScale / 100;
+      const sx0 = state.startScaleX / 100;
+      const sy0 = state.startScaleY / 100;
       const rad0 = (state.startRotation * Math.PI) / 180;
       const cosR0 = Math.cos(rad0);
       const sinR0 = Math.sin(rad0);
       // Bottom-right corner of raw bounds in display space at drag start
-      const lx = (state.rawBounds.maxX - state.center.x) * s0;
-      const ly = (state.rawBounds.maxY - state.center.y) * s0;
+      const lx = (state.rawBounds.maxX - state.center.x) * sx0;
+      const ly = (state.rawBounds.maxY - state.center.y) * sy0;
       const initCornerX = displayCx + lx * cosR0 - ly * sinR0;
       const initCornerY = displayCy + lx * sinR0 + ly * cosR0;
       const initDist = Math.hypot(initCornerX - displayCx, initCornerY - displayCy);
       const currDist = Math.hypot(pt.x - displayCx, pt.y - displayCy);
       if (initDist > 0.5) {
-        setImageScale(Math.max(5, Math.min(500, Math.round(state.startScale * currDist / initDist))));
+        const ratio = currDist / initDist;
+        setImageScaleX(Math.max(5, Math.min(500, Math.round(state.startScaleX * ratio))));
+        setImageScaleY(Math.max(5, Math.min(500, Math.round(state.startScaleY * ratio))));
       }
     } else {
       // rotate: delta angle from drag-start to current mouse, relative to display center
@@ -537,7 +641,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     if (!dragState.current) return;
     dragState.current = null;
     setIsDragging(false);
-    applyTransformAndRegenerate(imageScaleRef.current, offsetXRef.current, offsetYRef.current, rotationRef.current);
+    applyTransformAndRegenerate(imageScaleXRef.current, imageScaleYRef.current, offsetXRef.current, offsetYRef.current, rotationRef.current);
   };
 
   // --- Manual control handlers ---
@@ -547,17 +651,30 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     const dy = axis === 'y' ? value : offsetYRef.current;
     setOffsetX(dx);
     setOffsetY(dy);
-    applyTransformAndRegenerate(imageScaleRef.current, dx, dy, rotationRef.current);
+    applyTransformAndRegenerate(imageScaleXRef.current, imageScaleYRef.current, dx, dy, rotationRef.current);
   };
 
   const handleScaleChange = (newScale: number) => {
     setImageScale(newScale);
-    applyTransformAndRegenerate(newScale, offsetXRef.current, offsetYRef.current, rotationRef.current);
+    applyTransformAndRegenerate(newScale, newScale, offsetXRef.current, offsetYRef.current, rotationRef.current);
+  };
+
+  const handleDimensionChange = (axis: 'width' | 'height', valueMm: number) => {
+    if (!rawBounds || !Number.isFinite(valueMm) || valueMm <= 0) return;
+    if (axis === 'width' && rawWidth > 0) {
+      const nextScaleX = Math.max(5, Math.min(500, (valueMm / rawWidth) * 100));
+      setImageScaleX(nextScaleX);
+      applyTransformAndRegenerate(nextScaleX, imageScaleYRef.current, offsetXRef.current, offsetYRef.current, rotationRef.current);
+    } else if (axis === 'height' && rawHeight > 0) {
+      const nextScaleY = Math.max(5, Math.min(500, (valueMm / rawHeight) * 100));
+      setImageScaleY(nextScaleY);
+      applyTransformAndRegenerate(imageScaleXRef.current, nextScaleY, offsetXRef.current, offsetYRef.current, rotationRef.current);
+    }
   };
 
   const handleRotationChange = (newRotation: number) => {
     setRotation(newRotation);
-    applyTransformAndRegenerate(imageScaleRef.current, offsetXRef.current, offsetYRef.current, newRotation);
+    applyTransformAndRegenerate(imageScaleXRef.current, imageScaleYRef.current, offsetXRef.current, offsetYRef.current, newRotation);
   };
 
   const handleResetTransform = () => {
@@ -565,7 +682,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     setOffsetY(0);
     setImageScale(100);
     setRotation(0);
-    applyTransformAndRegenerate(100, 0, 0, 0);
+    applyTransformAndRegenerate(100, 100, 0, 0, 0);
   };
 
   const handleSpeedChange = (kind: 'travel' | 'drawing' | 'pen', value: number) => {
@@ -585,13 +702,162 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       drawingSpeed,
       penSpeed
     });
-    applyTransformAndRegenerate(imageScaleRef.current, offsetXRef.current, offsetYRef.current, rotationRef.current);
+    applyTransformAndRegenerate(imageScaleXRef.current, imageScaleYRef.current, offsetXRef.current, offsetYRef.current, rotationRef.current);
   }, [travelSpeed, drawingSpeed, penSpeed]);
 
   const handleResetSpeeds = () => {
     setTravelSpeed(defaultActionSpeeds.travelSpeed);
     setDrawingSpeed(defaultActionSpeeds.drawingSpeed);
     setPenSpeed(defaultActionSpeeds.penSpeed);
+  };
+
+  const fileToDataUrl = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error('Could not read artwork file.'));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const buildSavedProject = (): SavedProjectData | null => {
+    const paths = rawPathsRef.current;
+    const name = jobNameRef.current || sourceFileName || 'Untitled artwork';
+    if (!paths || !sourceDataUrl) return null;
+
+    return {
+      id: projectId,
+      name,
+      created: projectCreated,
+      machineProfileId: profile.id,
+      units,
+      canvas,
+      objects: [{
+        id: 'artwork-1',
+        type: artworkKind === 'svg' ? 'svg_path' : 'raster_image',
+        source: sourceDataUrl,
+        transform: {
+          x: offsetXRef.current,
+          y: offsetYRef.current,
+          scale: imageScaleXRef.current,
+          scaleY: imageScaleYRef.current,
+          rotation: rotationRef.current
+        },
+        visible: true,
+        paths,
+        metadata: {
+          formatVersion: 1,
+          artworkKind,
+          fileName: sourceFileName || name,
+          mimeType: sourceMimeType,
+          sourceDataUrl,
+          rasterSettings: {
+            mode: rasterMode,
+            detail: rasterDetail,
+            threshold,
+            brightness,
+            contrast,
+            blurRadius,
+            adaptiveThreshold,
+            smoothingTolerance,
+            invertRaster
+          },
+          actionSpeeds: {
+            travelSpeed,
+            drawingSpeed,
+            penSpeed
+          }
+        }
+      }],
+      savedAt: new Date().toISOString()
+    };
+  };
+
+  const handleSaveProject = async () => {
+    setError(null);
+    const project = buildSavedProject();
+    if (!project) {
+      setError('Load artwork before saving a plan.');
+      return;
+    }
+
+    const api = (window as unknown as { api?: { project?: ProjectApi } }).api?.project;
+    if (!api) {
+      setError('Project saving is only available in the desktop app.');
+      return;
+    }
+
+    const result = await api.save(project, projectFilePath);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+
+    const saved = result.data as (SavedProjectData & { filePath?: string }) | undefined;
+    setProjectFilePath(saved?.filePath);
+    setMessage(saved?.filePath ? `Saved plan to ${saved.filePath}.` : 'Saved plan.');
+  };
+
+  const handleLoadProject = async (file: File | undefined) => {
+    if (!file) return;
+    setError(null);
+
+    try {
+      const project = JSON.parse(await file.text()) as SavedProjectData & { filePath?: string };
+      const object = project.objects?.[0];
+      if (!object || !Array.isArray(object.paths) || object.paths.length === 0) {
+        throw new Error('Plan file does not contain drawable artwork.');
+      }
+
+      const metadata = object.metadata;
+      setProjectId(project.id || `project-${Date.now()}`);
+      setProjectCreated(project.created || new Date().toISOString());
+      setProjectFilePath(project.filePath);
+      setRawPaths(object.paths);
+      setOffsetX(Number(object.transform?.x ?? 0));
+      setOffsetY(Number(object.transform?.y ?? 0));
+      setImageScaleX(Number(object.transform?.scale ?? 100));
+      setImageScaleY(Number(object.transform?.scaleY ?? object.transform?.scale ?? 100));
+      setRotation(Number(object.transform?.rotation ?? 0));
+      setArtworkKind(metadata?.artworkKind ?? (object.type === 'raster_image' ? 'raster' : 'svg'));
+      setSourceFileName(metadata?.fileName ?? project.name ?? file.name);
+      setSourceMimeType(metadata?.mimeType ?? '');
+      setSourceDataUrl(metadata?.sourceDataUrl ?? object.source ?? '');
+
+      if (metadata?.rasterSettings) {
+        setRasterMode(metadata.rasterSettings.mode);
+        setRasterDetail(metadata.rasterSettings.detail);
+        setThreshold(metadata.rasterSettings.threshold);
+        setBrightness(metadata.rasterSettings.brightness);
+        setContrast(metadata.rasterSettings.contrast);
+        setBlurRadius(metadata.rasterSettings.blurRadius);
+        setAdaptiveThreshold(metadata.rasterSettings.adaptiveThreshold);
+        setSmoothingTolerance(metadata.rasterSettings.smoothingTolerance);
+        setInvertRaster(metadata.rasterSettings.invertRaster);
+      }
+
+      if (metadata?.actionSpeeds) {
+        setTravelSpeed(metadata.actionSpeeds.travelSpeed);
+        setDrawingSpeed(metadata.actionSpeeds.drawingSpeed);
+        setPenSpeed(metadata.actionSpeeds.penSpeed);
+      }
+
+      const bounds = computeAllBounds(object.paths);
+      regenerateJob(
+        object.paths,
+        project.name || metadata?.fileName || file.name,
+        (bounds.minX + bounds.maxX) / 2,
+        (bounds.minY + bounds.maxY) / 2,
+        Number(object.transform?.scale ?? 100),
+        Number(object.transform?.scaleY ?? object.transform?.scale ?? 100),
+        Number(object.transform?.x ?? 0),
+        Number(object.transform?.y ?? 0),
+        Number(object.transform?.rotation ?? 0)
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+      setMessage('Plan load failed.');
+    }
   };
 
   // --- Import and clear ---
@@ -602,6 +868,12 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     setOffsetY(0);
     setImageScale(100);
     setRotation(0);
+    setSourceFileName('');
+    setSourceMimeType('');
+    setSourceDataUrl('');
+    setProjectId(`project-${Date.now()}`);
+    setProjectCreated(new Date().toISOString());
+    setProjectFilePath(undefined);
     onPreparedJobChange(null);
     setMessage('Import an SVG path file to prepare a TA4 plotting job.');
     setError(null);
@@ -613,6 +885,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
     try {
       const isSvg = file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
+      const dataUrl = await fileToDataUrl(file);
       const paths = isSvg ? await prepareSvgPaths(file) : await prepareRasterPaths(file);
       if (paths.length === 0) {
         throw new Error('No drawable paths were found.');
@@ -623,6 +896,13 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       setOffsetY(0);
       setImageScale(100);
       setRotation(0);
+      setArtworkKind(isSvg ? 'svg' : 'raster');
+      setSourceFileName(file.name);
+      setSourceMimeType(inferImageMimeType(file));
+      setSourceDataUrl(dataUrl);
+      setProjectId(`project-${Date.now()}`);
+      setProjectCreated(new Date().toISOString());
+      setProjectFilePath(undefined);
 
       const generator = new GCodeGenerator(profile, canvas, { travelSpeed, drawingSpeed, penSpeed });
       const result = generator.generate(paths);
@@ -649,11 +929,11 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   };
 
   const prepareRasterPaths = async (file: File): Promise<Path[]> => {
-    const image = await loadImage(file);
+    const image = await loadRasterSource(file);
     const maxTraceSize = RASTER_TRACE_SIZES[rasterDetail];
-    const scale = Math.min(1, maxTraceSize / Math.max(image.naturalWidth, image.naturalHeight));
-    const width = Math.max(1, Math.round(image.naturalWidth * scale));
-    const height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const scale = Math.min(1, maxTraceSize / Math.max(image.width, image.height));
+    const width = Math.max(1, Math.round(image.width * scale));
+    const height = Math.max(1, Math.round(image.height * scale));
     const scratch = document.createElement('canvas');
     scratch.width = width;
     scratch.height = height;
@@ -664,14 +944,12 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
     context.fillStyle = '#fff';
     context.fillRect(0, 0, width, height);
-    context.drawImage(image, 0, 0, width, height);
+    context.drawImage(image.image, 0, 0, width, height);
     const imageData = context.getImageData(0, 0, width, height);
     if (invertRaster) {
       invertImageData(imageData.data);
     }
-    const objectUrl = image.src;
-    image.removeAttribute('src');
-    URL.revokeObjectURL(objectUrl);
+    image.cleanup();
 
     const traced = traceRasterToPaths(imageData.data, width, height, {
       mode: rasterMode,
@@ -690,12 +968,52 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     return smoothPaths(traced, smoothingTolerance);
   };
 
-  const loadImage = (file: File): Promise<HTMLImageElement> => {
+  const loadRasterSource = async (file: File): Promise<RasterSource> => {
+    const arrayBuffer = await file.arrayBuffer();
+    const signature = new Uint8Array(arrayBuffer.slice(0, 4));
+    const isPhotoshopFile = signature[0] === 0x38 && signature[1] === 0x42 && signature[2] === 0x50 && signature[3] === 0x53;
+    if (isPhotoshopFile) {
+      throw new Error(`${file.name} is a Photoshop PSD file renamed as .png. Export it as a real PNG or JPEG first.`);
+    }
+
+    const blob = new Blob([arrayBuffer], { type: inferImageMimeType(file) });
+
+    if ('createImageBitmap' in window) {
+      try {
+        const bitmap = await createImageBitmap(blob);
+        return {
+          image: bitmap,
+          width: bitmap.width,
+          height: bitmap.height,
+          cleanup: () => bitmap.close()
+        };
+      } catch {
+        // Fall through to the HTMLImageElement decoder below.
+      }
+    }
+
+    return loadHtmlImage(file, blob);
+  };
+
+  const loadHtmlImage = (file: File, blob: Blob): Promise<RasterSource> => {
     return new Promise((resolve, reject) => {
       const image = new Image();
-      image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error('Could not load image file.'));
-      image.src = URL.createObjectURL(file);
+      const objectUrl = URL.createObjectURL(blob);
+      const cleanup = () => {
+        image.removeAttribute('src');
+        URL.revokeObjectURL(objectUrl);
+      };
+      image.onload = () => resolve({
+        image,
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+        cleanup
+      });
+      image.onerror = () => {
+        cleanup();
+        reject(new Error(`Could not load ${file.name}. Use a PNG, JPEG, or SVG image.`));
+      };
+      image.src = objectUrl;
     });
   };
 
@@ -721,6 +1039,21 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           accept=".svg,.png,.jpg,.jpeg,image/svg+xml,image/png,image/jpeg"
           onChange={(event) => importSvg(event.target.files?.[0])}
         />
+        <label htmlFor="plan-import">Plan file</label>
+        <input
+          id="plan-import"
+          type="file"
+          accept=".boc.json,.json,application/json"
+          onChange={(event) => handleLoadProject(event.target.files?.[0])}
+        />
+        <button
+          type="button"
+          className="toolbar-btn"
+          disabled={!rawPaths}
+          onClick={handleSaveProject}
+        >
+          Save plan
+        </button>
         <button
           type="button"
           className={`toolbar-btn${showGrid ? ' active' : ''}`}
@@ -1045,13 +1378,35 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           />
           <span className="unit-label">{unitLabel}</span>
 
+          <label htmlFor="img-width">W</label>
+          <input
+            id="img-width"
+            type="number"
+            min={displayLengthInput(0.1, units)}
+            step={displayLengthInput(units === 'in' ? 0.254 : 1, units)}
+            value={displayLengthInput(imageWidth, units)}
+            onChange={(e) => handleDimensionChange('width', toMillimeters(Number(e.target.value), units))}
+          />
+          <span className="unit-label">{unitLabel}</span>
+
+          <label htmlFor="img-height">H</label>
+          <input
+            id="img-height"
+            type="number"
+            min={displayLengthInput(0.1, units)}
+            step={displayLengthInput(units === 'in' ? 0.254 : 1, units)}
+            value={displayLengthInput(imageHeight, units)}
+            onChange={(e) => handleDimensionChange('height', toMillimeters(Number(e.target.value), units))}
+          />
+          <span className="unit-label">{unitLabel}</span>
+
           <label htmlFor="img-scale-range">Scale</label>
           <input
             id="img-scale-range"
             type="range"
             min="5"
             max="200"
-            value={Math.min(200, imageScale)}
+            value={Math.min(200, Math.round((imageScaleX + imageScaleY) / 2))}
             onChange={(e) => handleScaleChange(Number(e.target.value))}
           />
           <input
@@ -1060,7 +1415,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
             min="5"
             max="500"
             step="1"
-            value={imageScale}
+            value={Math.round((imageScaleX + imageScaleY) / 2)}
             onChange={(e) => handleScaleChange(Math.max(5, Math.min(500, Number(e.target.value))))}
           />
           <span className="unit-label">%</span>

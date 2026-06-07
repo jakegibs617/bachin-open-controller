@@ -63,17 +63,19 @@ export interface Path {
 
 export interface CanvasObject {
   id: string;
-  type: 'svg_path' | 'text' | 'qr_code';
+  type: 'svg_path' | 'raster_image' | 'text' | 'qr_code';
   source: string;
   transform: Transform;
   visible: boolean;
   paths?: Path[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface Transform {
   x: number;
   y: number;
   scale: number;
+  scaleY?: number;
   rotation: number;
 }
 
