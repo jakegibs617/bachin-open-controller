@@ -811,7 +811,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       setRawPaths(null);
       onPreparedJobChange(null);
       setError(caught instanceof Error ? caught.message : String(caught));
-      setMessage('SVG import failed.');
+      setMessage('Artwork import failed.');
     }
   };
 
