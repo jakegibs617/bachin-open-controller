@@ -63,6 +63,17 @@ type RasterSource = {
   height: number;
   cleanup: () => void;
 };
+type RasterTraceSettings = {
+  mode: RasterMode;
+  detail: RasterDetail;
+  threshold: number;
+  brightness: number;
+  contrast: number;
+  blurRadius: number;
+  adaptiveThreshold: boolean;
+  smoothingTolerance: number;
+  invertRaster: boolean;
+};
 
 const RASTER_MODE_HINTS: Record<RasterMode, string> = {
   outline: 'Traces the outer silhouette of dark regions. Best for line art, logos, and images with clear edges.',
@@ -336,6 +347,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
   const svgRef = React.useRef<SVGSVGElement>(null);
   const dragState = React.useRef<DragState | null>(null);
+  const rasterSourceFileRef = React.useRef<File | null>(null);
+  const rasterReloadSeq = React.useRef(0);
 
   const progressStrokes = React.useMemo(
     () => preparedJob ? buildProgressStrokes(preparedJob.gcode, profile.origin) : [],
@@ -422,6 +435,84 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     const cx = (bounds.minX + bounds.maxX) / 2;
     const cy = (bounds.minY + bounds.maxY) / 2;
     regenerateJob(paths, jobNameRef.current, cx, cy, scaleXPct, scaleYPct, dx, dy, rotateDeg);
+  };
+
+  const getRasterSettings = (): RasterTraceSettings => ({
+    mode: rasterMode,
+    detail: rasterDetail,
+    threshold,
+    brightness,
+    contrast,
+    blurRadius,
+    adaptiveThreshold,
+    smoothingTolerance,
+    invertRaster
+  });
+
+  const dataUrlToFile = async (dataUrl: string, name: string, mimeType: string): Promise<File> => {
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    return new File([blob], name || 'raster-artwork', { type: mimeType || blob.type || 'application/octet-stream' });
+  };
+
+  const getReloadableRasterFile = async (): Promise<File | null> => {
+    if (rasterSourceFileRef.current) return rasterSourceFileRef.current;
+    if (!sourceDataUrl || artworkKind !== 'raster') return null;
+    const file = await dataUrlToFile(sourceDataUrl, sourceFileName, sourceMimeType);
+    rasterSourceFileRef.current = file;
+    return file;
+  };
+
+  const reloadRasterArtwork = async (settings: RasterTraceSettings) => {
+    if (artworkKind !== 'raster') return;
+    const reloadId = ++rasterReloadSeq.current;
+    setError(null);
+    try {
+      const file = await getReloadableRasterFile();
+      if (!file || reloadId !== rasterReloadSeq.current) return;
+
+      const paths = await prepareRasterPaths(file, settings);
+      if (reloadId !== rasterReloadSeq.current) return;
+      if (paths.length === 0) {
+        throw new Error('No drawable paths were found.');
+      }
+
+      setRawPaths(paths);
+      const bounds = computeAllBounds(paths);
+      const scaleX = imageScaleXRef.current;
+      const scaleY = imageScaleYRef.current;
+      const dx = offsetXRef.current;
+      const dy = offsetYRef.current;
+      const rotateDeg = rotationRef.current;
+      regenerateJob(
+        paths,
+        jobNameRef.current || sourceFileName || file.name,
+        (bounds.minX + bounds.maxX) / 2,
+        (bounds.minY + bounds.maxY) / 2,
+        scaleX,
+        scaleY,
+        dx,
+        dy,
+        rotateDeg
+      );
+    } catch (caught) {
+      if (reloadId !== rasterReloadSeq.current) return;
+      setError(caught instanceof Error ? caught.message : String(caught));
+      setMessage('Raster trace update failed.');
+    }
+  };
+
+  const updateRasterSettings = (settings: RasterTraceSettings) => {
+    setRasterMode(settings.mode);
+    setRasterDetail(settings.detail);
+    setThreshold(settings.threshold);
+    setBrightness(settings.brightness);
+    setContrast(settings.contrast);
+    setBlurRadius(settings.blurRadius);
+    setAdaptiveThreshold(settings.adaptiveThreshold);
+    setSmoothingTolerance(settings.smoothingTolerance);
+    setInvertRaster(settings.invertRaster);
+    void reloadRasterArtwork(settings);
   };
 
   // --- Pointer event handlers ---
@@ -717,6 +808,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       setSourceFileName(metadata?.fileName ?? project.name ?? file.name);
       setSourceMimeType(metadata?.mimeType ?? '');
       setSourceDataUrl(metadata?.sourceDataUrl ?? object.source ?? '');
+      rasterSourceFileRef.current = null;
 
       if (metadata?.rasterSettings) {
         setRasterMode(metadata.rasterSettings.mode);
@@ -794,6 +886,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   // --- Import and clear ---
 
   const handleClear = () => {
+    rasterReloadSeq.current += 1;
+    rasterSourceFileRef.current = null;
     setRawPaths(null);
     setOffsetX(0);
     setOffsetY(0);
@@ -812,12 +906,14 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
   const importArtwork = async (file: File | undefined) => {
     if (!file) return;
+    rasterReloadSeq.current += 1;
+    rasterSourceFileRef.current = null;
     setError(null);
 
     try {
       const isSvg = file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
       const dataUrl = await fileToDataUrl(file);
-      const paths = isSvg ? await prepareSvgPaths(file) : await prepareRasterPaths(file);
+      const paths = isSvg ? await prepareSvgPaths(file) : await prepareRasterPaths(file, getRasterSettings());
       if (paths.length === 0) {
         throw new Error('No drawable paths were found.');
       }
@@ -831,6 +927,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       setSourceFileName(file.name);
       setSourceMimeType(inferImageMimeType(file));
       setSourceDataUrl(dataUrl);
+      rasterSourceFileRef.current = isSvg ? null : file;
       setProjectId(`project-${Date.now()}`);
       setProjectCreated(new Date().toISOString());
       setProjectFilePath(undefined);
@@ -853,6 +950,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       setMessage(`Prepared ${file.name}: ${paths.length} stroke${paths.length === 1 ? '' : 's'}, ${result.gcode.length} G-code lines.`);
     } catch (caught) {
       setRawPaths(null);
+      rasterSourceFileRef.current = null;
       onPreparedJobChange(null);
       setError(caught instanceof Error ? caught.message : String(caught));
       setMessage('Artwork import failed.');
@@ -866,7 +964,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     return normalizePaths(rawParsedPaths);
   };
 
-  const prepareRasterPaths = async (file: File): Promise<Path[]> => {
+  const prepareRasterPaths = async (file: File, settings: RasterTraceSettings): Promise<Path[]> => {
     const startedAt = performance.now();
     const image = await loadRasterSource(file);
     const decodedAt = performance.now();
@@ -874,11 +972,11 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       name: file.name,
       width: image.width,
       height: image.height,
-      detail: rasterDetail,
-      mode: rasterMode,
+      detail: settings.detail,
+      mode: settings.mode,
       durationMs: Math.round(decodedAt - startedAt)
     });
-    const maxTraceSize = RASTER_TRACE_SIZES[rasterDetail];
+    const maxTraceSize = RASTER_TRACE_SIZES[settings.detail];
     const scale = Math.min(1, maxTraceSize / Math.max(image.width, image.height));
     const width = Math.max(1, Math.round(image.width * scale));
     const height = Math.max(1, Math.round(image.height * scale));
@@ -894,26 +992,26 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     context.fillRect(0, 0, width, height);
     context.drawImage(image.image, 0, 0, width, height);
     const imageData = context.getImageData(0, 0, width, height);
-    if (invertRaster) {
+    if (settings.invertRaster) {
       invertImageData(imageData.data);
     }
     image.cleanup();
 
     const traced = traceRasterToPaths(imageData.data, width, height, {
-      mode: rasterMode,
-      threshold,
+      mode: settings.mode,
+      threshold: settings.threshold,
       xStep: 1,
-      yStep: rasterDetail === 'fine' || rasterDetail === 'ultra' || rasterDetail === 'max' || rasterMode === 'dither' ? 1 : 2,
+      yStep: settings.detail === 'fine' || settings.detail === 'ultra' || settings.detail === 'max' || settings.mode === 'dither' ? 1 : 2,
       minRunLength: 2,
-      blurRadius,
-      brightness,
-      contrast,
-      adaptiveThreshold,
+      blurRadius: settings.blurRadius,
+      brightness: settings.brightness,
+      contrast: settings.contrast,
+      adaptiveThreshold: settings.adaptiveThreshold,
       canvasWidth: canvas.width,
       canvasHeight: canvas.height
     });
 
-    const smoothed = smoothPaths(traced, smoothingTolerance);
+    const smoothed = smoothPaths(traced, settings.smoothingTolerance);
     console.info('[Artwork] traced raster', {
       name: file.name,
       traceWidth: width,
@@ -1043,14 +1141,22 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
       <section className="raster-settings" aria-label="Raster trace settings">
         <label htmlFor="raster-mode">Raster mode</label>
-        <select id="raster-mode" value={rasterMode} onChange={(event) => setRasterMode(event.target.value as RasterMode)}>
+        <select
+          id="raster-mode"
+          value={rasterMode}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), mode: event.target.value as RasterMode })}
+        >
           <option value="outline">Outline</option>
           <option value="fill">Fill lines</option>
           <option value="centerline">Centerline</option>
           <option value="dither">Dither</option>
         </select>
         <label htmlFor="raster-detail">Detail</label>
-        <select id="raster-detail" value={rasterDetail} onChange={(event) => setRasterDetail(event.target.value as RasterDetail)}>
+        <select
+          id="raster-detail"
+          value={rasterDetail}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), detail: event.target.value as RasterDetail })}
+        >
           <option value="draft">Draft 320px</option>
           <option value="normal">Normal 512px</option>
           <option value="fine">Fine 1024px</option>
@@ -1064,7 +1170,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           min="40"
           max="240"
           value={threshold}
-          onChange={(event) => setThreshold(Number(event.target.value))}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), threshold: Number(event.target.value) })}
         />
         <span>{threshold}</span>
         <label htmlFor="raster-brightness">Brightness</label>
@@ -1074,7 +1180,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           min="-100"
           max="100"
           value={brightness}
-          onChange={(event) => setBrightness(Number(event.target.value))}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), brightness: Number(event.target.value) })}
         />
         <span>{brightness}</span>
         <label htmlFor="raster-contrast">Contrast</label>
@@ -1084,7 +1190,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           min="0"
           max="250"
           value={contrast}
-          onChange={(event) => setContrast(Number(event.target.value))}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), contrast: Number(event.target.value) })}
         />
         <span>{contrast}%</span>
         <label htmlFor="raster-blur">Blur</label>
@@ -1095,7 +1201,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           max="6"
           step="0.25"
           value={blurRadius}
-          onChange={(event) => setBlurRadius(Number(event.target.value))}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), blurRadius: Number(event.target.value) })}
         />
         <span>{blurRadius.toFixed(2)}</span>
         <label htmlFor="raster-smoothing">Smooth</label>
@@ -1106,15 +1212,23 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           max="2"
           step="0.05"
           value={smoothingTolerance}
-          onChange={(event) => setSmoothingTolerance(Number(event.target.value))}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), smoothingTolerance: Number(event.target.value) })}
         />
         <span>{smoothingTolerance.toFixed(2)}</span>
         <label className="check-row">
-          <input type="checkbox" checked={adaptiveThreshold} onChange={(event) => setAdaptiveThreshold(event.target.checked)} />
+          <input
+            type="checkbox"
+            checked={adaptiveThreshold}
+            onChange={(event) => updateRasterSettings({ ...getRasterSettings(), adaptiveThreshold: event.target.checked })}
+          />
           Adaptive
         </label>
         <label className="check-row">
-          <input type="checkbox" checked={invertRaster} onChange={(event) => setInvertRaster(event.target.checked)} />
+          <input
+            type="checkbox"
+            checked={invertRaster}
+            onChange={(event) => updateRasterSettings({ ...getRasterSettings(), invertRaster: event.target.checked })}
+          />
           Invert
         </label>
         <span className="raster-settings-hint">{RASTER_MODE_HINTS[rasterMode]}</span>
