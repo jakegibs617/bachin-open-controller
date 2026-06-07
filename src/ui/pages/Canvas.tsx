@@ -24,6 +24,15 @@ import {
   loadActionSpeedSettings,
   saveActionSpeedSettings
 } from '../settings/actionSpeeds';
+import {
+  ArtworkKind,
+  RasterDetail,
+  RasterMode,
+  SavedProjectData,
+  applyArtworkTransform,
+  inferImageMimeType,
+  isPhotoshopSignature
+} from '../artworkPlan';
 import ta4Profile from '../../../profiles/ta4.json';
 import { PreparedJob } from '../App';
 
@@ -47,26 +56,13 @@ const canvas: CanvasModel = {
   offsetX: 0,
   offsetY: 0
 };
-type RasterMode = 'outline' | 'fill' | 'centerline' | 'dither';
 type GridUnit = 'mm' | 'cm' | 'in';
-type ArtworkKind = 'svg' | 'raster';
 type RasterSource = {
   image: CanvasImageSource;
   width: number;
   height: number;
   cleanup: () => void;
 };
-
-function inferImageMimeType(file: File): string {
-  const explicitType = file.type.toLowerCase();
-  if (explicitType.startsWith('image/')) return explicitType;
-
-  const lowerName = file.name.toLowerCase();
-  if (lowerName.endsWith('.png')) return 'image/png';
-  if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) return 'image/jpeg';
-  if (lowerName.endsWith('.svg')) return 'image/svg+xml';
-  return 'application/octet-stream';
-}
 
 const RASTER_MODE_HINTS: Record<RasterMode, string> = {
   outline: 'Traces the outer silhouette of dark regions. Best for line art, logos, and images with clear edges.',
@@ -75,15 +71,13 @@ const RASTER_MODE_HINTS: Record<RasterMode, string> = {
   dither: 'Converts gray tones to dot patterns using ordered dithering. Best for photos and continuous-tone images.',
 };
 
-const RASTER_TRACE_SIZES = {
+const RASTER_TRACE_SIZES: Record<RasterDetail, number> = {
   draft: 320,
   normal: 512,
   fine: 1024,
   ultra: 1536,
   max: 2048
 };
-
-type RasterDetail = keyof typeof RASTER_TRACE_SIZES;
 
 const GRID_SPACING: Record<GridUnit, { minor: number; major: number }> = {
   mm: { minor: 5, major: 10 },
@@ -126,57 +120,6 @@ interface DragState {
   startAngle: number; // radians from display center to startPt (used for rotate)
   rawBounds: BoundingBox;
   center: { x: number; y: number }; // raw image center
-}
-
-interface SavedArtworkMetadata {
-  formatVersion: 1;
-  artworkKind: ArtworkKind;
-  fileName: string;
-  mimeType: string;
-  sourceDataUrl: string;
-  rasterSettings: {
-    mode: RasterMode;
-    detail: RasterDetail;
-    threshold: number;
-    brightness: number;
-    contrast: number;
-    blurRadius: number;
-    adaptiveThreshold: boolean;
-    smoothingTolerance: number;
-    invertRaster: boolean;
-  };
-  actionSpeeds: {
-    travelSpeed: number;
-    drawingSpeed: number;
-    penSpeed: number;
-  };
-}
-
-interface SavedCanvasObject {
-  id: string;
-  type: 'svg_path' | 'raster_image';
-  source: string;
-  transform: {
-    x: number;
-    y: number;
-    scale: number;
-    scaleY: number;
-    rotation: number;
-  };
-  visible: boolean;
-  paths: Path[];
-  metadata: SavedArtworkMetadata;
-}
-
-interface SavedProjectData {
-  id: string;
-  name: string;
-  created: string;
-  machineProfileId: string;
-  units: LengthUnit;
-  canvas: CanvasModel;
-  objects: SavedCanvasObject[];
-  savedAt: string;
 }
 
 interface ActionSpeedSliderProps {
@@ -276,55 +219,6 @@ function computeAllBounds(paths: Path[]): BoundingBox {
     minY: Math.min(b.minY, p.bounds.minY),
     maxY: Math.max(b.maxY, p.bounds.maxY)
   }), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
-}
-
-// Apply scale (around center), rotation, and translation to all path coordinates.
-// scaleX=100, scaleY=100, rotateDeg=0, dx=0, dy=0 is the identity transform.
-function applyTransform(
-  paths: Path[],
-  cx: number,
-  cy: number,
-  scaleX: number,
-  scaleY: number,
-  dx: number,
-  dy: number,
-  rotateDeg: number
-): Path[] {
-  const sx = scaleX / 100;
-  const sy = scaleY / 100;
-  const rad = (rotateDeg * Math.PI) / 180;
-  const cosR = Math.cos(rad);
-  const sinR = Math.sin(rad);
-
-  const xformPt = (x: number, y: number) => ({
-    x: cx + dx + (x - cx) * sx * cosR - (y - cy) * sy * sinR,
-    y: cy + dy + (x - cx) * sx * sinR + (y - cy) * sy * cosR
-  });
-
-  return paths.map((path) => {
-    const segments = path.segments.map((seg) => ({ ...seg, ...xformPt(seg.x, seg.y) }));
-
-    // Tight AABB of the four rotated corners of the original bounding box
-    const corners = [
-      xformPt(path.bounds.minX, path.bounds.minY),
-      xformPt(path.bounds.maxX, path.bounds.minY),
-      xformPt(path.bounds.maxX, path.bounds.maxY),
-      xformPt(path.bounds.minX, path.bounds.maxY)
-    ];
-    const xs = corners.map((c) => c.x);
-    const ys = corners.map((c) => c.y);
-
-    return {
-      ...path,
-      segments,
-      bounds: {
-        minX: Math.min(...xs),
-        maxX: Math.max(...xs),
-        minY: Math.min(...ys),
-        maxY: Math.max(...ys)
-      }
-    };
-  });
 }
 
 interface ProgressStrokePoint {
@@ -514,7 +408,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     dy: number,
     rotateDeg: number
   ) => {
-    const transformed = applyTransform(paths, cx, cy, scaleXPct, scaleYPct, dx, dy, rotateDeg);
+    const transformed = applyArtworkTransform(paths, cx, cy, scaleXPct, scaleYPct, dx, dy, rotateDeg);
     const generator = new GCodeGenerator(profile, canvas, { travelSpeed, drawingSpeed, penSpeed });
     const result = generator.generate(transformed);
     onPreparedJobChange({ name, paths: transformed, gcode: result.gcode, warnings: result.warnings });
@@ -970,9 +864,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
   const loadRasterSource = async (file: File): Promise<RasterSource> => {
     const arrayBuffer = await file.arrayBuffer();
-    const signature = new Uint8Array(arrayBuffer.slice(0, 4));
-    const isPhotoshopFile = signature[0] === 0x38 && signature[1] === 0x42 && signature[2] === 0x50 && signature[3] === 0x53;
-    if (isPhotoshopFile) {
+    if (isPhotoshopSignature(arrayBuffer)) {
       throw new Error(`${file.name} is a Photoshop PSD file renamed as .png. Export it as a real PNG or JPEG first.`);
     }
 
