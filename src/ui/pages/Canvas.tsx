@@ -281,8 +281,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   ));
   const [message, setMessage] = React.useState('Import an SVG path file to prepare a TA4 plotting job.');
   const [error, setError] = React.useState<string | null>(null);
-  const [rasterMode, setRasterMode] = React.useState<RasterMode>('centerline');
-  const [rasterDetail, setRasterDetail] = React.useState<RasterDetail>('fine');
+  const [rasterMode, setRasterMode] = React.useState<RasterMode>('outline');
+  const [rasterDetail, setRasterDetail] = React.useState<RasterDetail>('draft');
   const [threshold, setThreshold] = React.useState(170);
   const [brightness, setBrightness] = React.useState(0);
   const [contrast, setContrast] = React.useState(100);
@@ -737,6 +737,11 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       }
 
       const bounds = computeAllBounds(object.paths);
+      console.info('[Artwork] loaded plan', {
+        name: project.name || file.name,
+        paths: object.paths.length,
+        transform: object.transform
+      });
       regenerateJob(
         object.paths,
         project.name || metadata?.fileName || file.name,
@@ -761,12 +766,29 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
   const handleOpenFile = async (file: File | undefined) => {
     if (!file) return;
+    const startedAt = performance.now();
+    console.info('[Artwork] open file', {
+      name: file.name,
+      type: file.type || '(empty)',
+      size: file.size,
+      route: shouldLoadAsProject(file) ? 'plan' : 'artwork'
+    });
     if (shouldLoadAsProject(file)) {
       await handleLoadProject(file);
+      console.info('[Artwork] open complete', {
+        name: file.name,
+        route: 'plan',
+        durationMs: Math.round(performance.now() - startedAt)
+      });
       return;
     }
 
     await importArtwork(file);
+    console.info('[Artwork] open complete', {
+      name: file.name,
+      route: 'artwork',
+      durationMs: Math.round(performance.now() - startedAt)
+    });
   };
 
   // --- Import and clear ---
@@ -815,6 +837,13 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
       const generator = new GCodeGenerator(profile, canvas, { travelSpeed, drawingSpeed, penSpeed });
       const result = generator.generate(paths);
+      console.info('[Artwork] imported artwork', {
+        name: file.name,
+        kind: isSvg ? 'svg' : 'raster',
+        paths: paths.length,
+        gcodeLines: result.gcode.length,
+        warnings: result.warnings.length
+      });
       onPreparedJobChange({
         name: file.name,
         paths,
@@ -838,7 +867,17 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   };
 
   const prepareRasterPaths = async (file: File): Promise<Path[]> => {
+    const startedAt = performance.now();
     const image = await loadRasterSource(file);
+    const decodedAt = performance.now();
+    console.info('[Artwork] decoded raster', {
+      name: file.name,
+      width: image.width,
+      height: image.height,
+      detail: rasterDetail,
+      mode: rasterMode,
+      durationMs: Math.round(decodedAt - startedAt)
+    });
     const maxTraceSize = RASTER_TRACE_SIZES[rasterDetail];
     const scale = Math.min(1, maxTraceSize / Math.max(image.width, image.height));
     const width = Math.max(1, Math.round(image.width * scale));
@@ -874,12 +913,21 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       canvasHeight: canvas.height
     });
 
-    return smoothPaths(traced, smoothingTolerance);
+    const smoothed = smoothPaths(traced, smoothingTolerance);
+    console.info('[Artwork] traced raster', {
+      name: file.name,
+      traceWidth: width,
+      traceHeight: height,
+      paths: smoothed.length,
+      durationMs: Math.round(performance.now() - decodedAt)
+    });
+    return smoothed;
   };
 
   const loadRasterSource = async (file: File): Promise<RasterSource> => {
     const arrayBuffer = await file.arrayBuffer();
     if (isPhotoshopSignature(arrayBuffer)) {
+      console.info('[Artwork] rejected PSD signature', { name: file.name });
       throw new Error(`${file.name} is a Photoshop PSD file renamed as .png. Export it as a real PNG or JPEG first.`);
     }
 
@@ -888,6 +936,11 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     if ('createImageBitmap' in window) {
       try {
         const bitmap = await createImageBitmap(blob);
+        console.info('[Artwork] decoded with createImageBitmap', {
+          name: file.name,
+          width: bitmap.width,
+          height: bitmap.height
+        });
         return {
           image: bitmap,
           width: bitmap.width,
@@ -918,6 +971,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       });
       image.onerror = () => {
         cleanup();
+        console.info('[Artwork] image element decode failed', { name: file.name });
         reject(new Error(`Could not load ${file.name}. Use a PNG, JPEG, or SVG image.`));
       };
       image.src = objectUrl;
