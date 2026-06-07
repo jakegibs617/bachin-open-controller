@@ -436,6 +436,7 @@ function skeletonToPaths(
       }
 
       usedEdges.add(eid);
+      compSet.delete(eid);
       const e = edges[eid];
       const reversed = e.nodeB === curNode && e.nodeA !== curNode;
       const px = reversed ? [...e.pixels].reverse() : e.pixels;

@@ -36,7 +36,7 @@ function resolveSpeed(value: number | undefined, fallback: number): number {
   return fallback;
 }
 
-function feedFromCommand(command: string): number | null {
+export function feedFromCommand(command: string): number | null {
   const match = command.match(/\bF(-?\d+(?:\.\d+)?)\b/i);
   if (!match) {
     return null;

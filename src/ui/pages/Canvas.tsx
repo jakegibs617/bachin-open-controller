@@ -68,7 +68,6 @@ const GRID_SPACING: Record<GridUnit, { minor: number; major: number }> = {
 };
 
 const ROTATE_HANDLE_DIST = 10; // mm from top edge to rotation handle
-const DEFAULT_ACTION_SPEEDS = defaultActionSpeedSettings(profile);
 type DragMode = 'move' | 'resize' | 'rotate';
 
 function displayLengthInput(valueMm: number, units: LengthUnit, precision: number = 4): number {
@@ -303,9 +302,10 @@ function buildProgressStrokes(gcode: string[], origin: string): ProgressStroke[]
 }
 
 export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJobChange, jobProgress }) => {
+  const defaultActionSpeeds = defaultActionSpeedSettings(profile);
   const [initialActionSpeeds] = React.useState(() => loadActionSpeedSettings(
     getBrowserStorage(),
-    DEFAULT_ACTION_SPEEDS
+    defaultActionSpeeds
   ));
   const [message, setMessage] = React.useState('Import an SVG path file to prepare a TA4 plotting job.');
   const [error, setError] = React.useState<string | null>(null);
@@ -589,9 +589,9 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   }, [travelSpeed, drawingSpeed, penSpeed]);
 
   const handleResetSpeeds = () => {
-    setTravelSpeed(DEFAULT_ACTION_SPEEDS.travelSpeed);
-    setDrawingSpeed(DEFAULT_ACTION_SPEEDS.drawingSpeed);
-    setPenSpeed(DEFAULT_ACTION_SPEEDS.penSpeed);
+    setTravelSpeed(defaultActionSpeeds.travelSpeed);
+    setDrawingSpeed(defaultActionSpeeds.drawingSpeed);
+    setPenSpeed(defaultActionSpeeds.penSpeed);
   };
 
   // --- Import and clear ---
@@ -835,7 +835,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           id="travel-speed"
           label="Travel"
           valueMm={travelSpeed}
-          optimalMm={DEFAULT_ACTION_SPEEDS.travelSpeed}
+          optimalMm={defaultActionSpeeds.travelSpeed}
           units={units}
           onChange={(valueMm) => handleSpeedChange('travel', valueMm)}
         />
@@ -843,7 +843,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           id="drawing-speed"
           label="Draw"
           valueMm={drawingSpeed}
-          optimalMm={DEFAULT_ACTION_SPEEDS.drawingSpeed}
+          optimalMm={defaultActionSpeeds.drawingSpeed}
           units={units}
           onChange={(valueMm) => handleSpeedChange('drawing', valueMm)}
         />
@@ -851,7 +851,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           id="pen-speed"
           label="Pen Z"
           valueMm={penSpeed}
-          optimalMm={DEFAULT_ACTION_SPEEDS.penSpeed}
+          optimalMm={defaultActionSpeeds.penSpeed}
           units={units}
           onChange={(valueMm) => handleSpeedChange('pen', valueMm)}
         />

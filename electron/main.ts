@@ -23,7 +23,7 @@ import { validateGCodeJob } from '../src/core/gcode';
 import ta4Profile from '../profiles/ta4.json';
 import { MachineProfile, Project } from '../src/types';
 
-let mainWindow: BrowserWindow;
+let mainWindow: BrowserWindow | null = null;
 let grblController: GRBLController | undefined;
 const machineProfile = ta4Profile as MachineProfile;
 const holdCurrentCommand = '$1=255';
@@ -236,12 +236,24 @@ function createWindow() {
     }
   });
 
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+
   // Phase 4: Load app URL (dev server or bundled app)
   if (process.env.ELECTRON_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_DEV_SERVER_URL);
   } else {
     mainWindow.loadFile(path.join(__dirname, '../index.html'));
   }
+}
+
+function sendMainWindowProgress(sent: number, total: number): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send('serial:progress', { sent, total });
 }
 
 app.on('ready', createWindow);
@@ -289,7 +301,7 @@ ipcMain.handle('serial:sendJob', async (_event, gcode: string[]) => {
     validateGCodeJob(gcode, machineProfile);
 
     await controller.streamJob(gcode, (sent, total) => {
-      mainWindow.webContents.send('serial:progress', { sent, total });
+      sendMainWindowProgress(sent, total);
     }, { waitForIdle: true });
   });
 });
@@ -302,7 +314,7 @@ ipcMain.handle('serial:perimeterTest', async (_event, width?: number, height?: n
     const gcode = generatePerimeterGCode(w, h, machineProfile);
     validateGCodeJob(gcode, machineProfile);
     await controller.streamJob(gcode, (sent, total) => {
-      mainWindow.webContents.send('serial:progress', { sent, total });
+      sendMainWindowProgress(sent, total);
     }, { waitForIdle: true });
   });
 });

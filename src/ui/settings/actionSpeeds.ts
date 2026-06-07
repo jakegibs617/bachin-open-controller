@@ -1,4 +1,5 @@
 import { MachineProfile } from '../../types';
+import { feedFromCommand } from '../../core/gcode';
 
 export interface ActionSpeedSettings {
   travelSpeed: number;
@@ -18,16 +19,6 @@ function clampSpeed(value: unknown, fallback: number): number {
   }
 
   return Math.max(MIN_ACTION_SPEED, Math.min(MAX_ACTION_SPEED, Math.round(speed)));
-}
-
-function feedFromCommand(command: string): number | null {
-  const match = command.match(/\bF(-?\d+(?:\.\d+)?)\b/i);
-  if (!match) {
-    return null;
-  }
-
-  const feed = Number(match[1]);
-  return Number.isFinite(feed) && feed > 0 ? feed : null;
 }
 
 export function defaultActionSpeedSettings(profile: MachineProfile): ActionSpeedSettings {
