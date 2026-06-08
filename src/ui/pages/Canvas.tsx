@@ -326,7 +326,6 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const [sourceDataUrl, setSourceDataUrl] = React.useState('');
   const [projectId, setProjectId] = React.useState(() => `project-${Date.now()}`);
   const [projectCreated, setProjectCreated] = React.useState(() => new Date().toISOString());
-  const [projectFilePath, setProjectFilePath] = React.useState<string | undefined>(undefined);
   const offsetXRef = React.useRef(0);
   const offsetYRef = React.useRef(0);
   const imageScaleXRef = React.useRef(100);
@@ -346,6 +345,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   React.useEffect(() => { jobNameRef.current = preparedJob?.name ?? ''; }, [preparedJob]);
 
   const svgRef = React.useRef<SVGSVGElement>(null);
+  const importPlanInputRef = React.useRef<HTMLInputElement>(null);
   const dragState = React.useRef<DragState | null>(null);
   const rasterSourceFileRef = React.useRef<File | null>(null);
   const rasterReloadSeq = React.useRef(0);
@@ -772,15 +772,16 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       return;
     }
 
-    const result = await api.save(project, projectFilePath);
+    const result = await api.save(project);
     if (!result.ok) {
       setError(result.error);
       return;
     }
 
     const saved = result.data as (SavedProjectData & { filePath?: string }) | undefined;
-    setProjectFilePath(saved?.filePath);
-    setMessage(saved?.filePath ? `Saved plan to ${saved.filePath}.` : 'Saved plan.');
+    setMessage(saved?.filePath
+      ? `Saved plan to your Downloads folder: ${saved.filePath}.`
+      : 'Saved plan to your Downloads folder.');
   };
 
   const handleLoadProject = async (file: File | undefined) => {
@@ -797,7 +798,6 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       const metadata = object.metadata;
       setProjectId(project.id || `project-${Date.now()}`);
       setProjectCreated(project.created || new Date().toISOString());
-      setProjectFilePath(project.filePath);
       setRawPaths(object.paths);
       setOffsetX(Number(object.transform?.x ?? 0));
       setOffsetY(Number(object.transform?.y ?? 0));
@@ -898,7 +898,6 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     setSourceDataUrl('');
     setProjectId(`project-${Date.now()}`);
     setProjectCreated(new Date().toISOString());
-    setProjectFilePath(undefined);
     onPreparedJobChange(null);
     setMessage('Import an SVG path file to prepare a TA4 plotting job.');
     setError(null);
@@ -930,7 +929,6 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       rasterSourceFileRef.current = isSvg ? null : file;
       setProjectId(`project-${Date.now()}`);
       setProjectCreated(new Date().toISOString());
-      setProjectFilePath(undefined);
 
       const generator = new GCodeGenerator(profile, canvas, { travelSpeed, drawingSpeed, penSpeed });
       const result = generator.generate(paths);
@@ -1101,6 +1099,16 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
             event.target.value = '';
           }}
         />
+        <input
+          ref={importPlanInputRef}
+          className="visually-hidden-file"
+          type="file"
+          accept=".boc.json,.json,application/json"
+          onChange={(event) => {
+            void handleLoadProject(event.target.files?.[0]);
+            event.target.value = '';
+          }}
+        />
         <button
           type="button"
           className="toolbar-btn"
@@ -1108,6 +1116,13 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           onClick={handleSaveProject}
         >
           Save plan
+        </button>
+        <button
+          type="button"
+          className="toolbar-btn"
+          onClick={() => importPlanInputRef.current?.click()}
+        >
+          Import plan
         </button>
         <button
           type="button"
@@ -1138,6 +1153,11 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           </button>
         )}
       </section>
+
+      <div className="canvas-message-banner" role="status" aria-live="polite">
+        <p className="status-message">{message}</p>
+        {error && <p className="error-message">{error}</p>}
+      </div>
 
       <section className="raster-settings" aria-label="Raster trace settings">
         <label htmlFor="raster-mode">Raster mode</label>
@@ -1521,7 +1541,6 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           <dd>{preparedJob ? preparedJob.paths.length : 0}</dd>
         </div>
       </dl>
-      <p className="status-message">{message}</p>
       {preparedJob && preparedJob.warnings.length > 0 && (
         <ul className="warning-list">
           {preparedJob.warnings.map((warning, index) => (
@@ -1531,7 +1550,6 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           ))}
         </ul>
       )}
-      {error && <p className="error-message">{error}</p>}
     </div>
   );
 };
