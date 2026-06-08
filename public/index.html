@@ -479,6 +479,11 @@
 
     .canvas-toolbar input[type="file"] { min-width: 230px; }
 
+    .canvas-toolbar .visually-hidden-file {
+      display: none;
+      min-width: 0;
+    }
+
     .canvas-toolbar select {
       padding: 5px 8px;
       border: 1px solid var(--outline);
@@ -511,6 +516,27 @@
       background: var(--primary);
       color: var(--on-primary);
       border-color: transparent;
+    }
+
+    .canvas-message-banner {
+      max-width: 100%;
+      margin: 0 0 12px;
+      padding: 9px 12px;
+      border: 1px solid var(--outline-faint);
+      border-left: 3px solid var(--primary);
+      border-radius: var(--r-sm);
+      background: var(--surface);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .canvas-message-banner .status-message,
+    .canvas-message-banner .error-message {
+      max-width: none;
+      margin-top: 0;
+    }
+
+    .canvas-message-banner .error-message {
+      margin-top: 4px;
     }
 
     /* ── Raster settings strip ─────────────────────────── */

@@ -164,7 +164,7 @@ function safeProjectFileName(project: SavedProject): string {
 }
 
 async function defaultProjectPath(project: SavedProject): Promise<string> {
-  const projectDir = path.join(app.getPath('userData'), 'projects');
+  const projectDir = app.getPath('downloads');
   await fs.mkdir(projectDir, { recursive: true });
   return path.join(projectDir, safeProjectFileName(project));
 }
