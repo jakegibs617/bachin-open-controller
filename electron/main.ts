@@ -283,6 +283,7 @@ ipcMain.handle('serial:connect', async (_event, port: string, baudRate: number) 
 
     grblController = new GRBLController();
     await grblController.openPort(port, baudRate || machineProfile.baudRate);
+    await grblController.wakeAfterReset();
     return { port, baudRate: baudRate || machineProfile.baudRate };
   });
 });
