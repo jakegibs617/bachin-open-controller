@@ -371,10 +371,38 @@ export class GRBLController extends EventEmitter {
 export async function listSerialPorts(): Promise<Array<{ path: string; manufacturer?: string; serialNumber?: string }>> {
   const ports = await SerialPort.list();
   return ports.map((port) => ({
-    path: port.path,
+    path: normalizeSerialPortPath(port.path),
     manufacturer: port.manufacturer,
     serialNumber: port.serialNumber
-  }));
+  })).sort(compareSerialPorts);
+}
+
+function normalizeSerialPortPath(portPath: string): string {
+  if (process.platform === 'darwin' && portPath.startsWith('/dev/tty.')) {
+    return portPath.replace('/dev/tty.', '/dev/cu.');
+  }
+
+  return portPath;
+}
+
+function compareSerialPorts(
+  a: { path: string; manufacturer?: string; serialNumber?: string },
+  b: { path: string; manufacturer?: string; serialNumber?: string }
+): number {
+  return serialPortScore(b) - serialPortScore(a) || a.path.localeCompare(b.path);
+}
+
+function serialPortScore(port: { path: string; manufacturer?: string; serialNumber?: string }): number {
+  const text = `${port.path} ${port.manufacturer ?? ''} ${port.serialNumber ?? ''}`.toLowerCase();
+  let score = 0;
+
+  if (text.includes('usb')) score += 100;
+  if (text.includes('wch') || text.includes('ch340') || text.includes('1a86') || text.includes('7523')) score += 50;
+  if (text.includes('/dev/cu.')) score += 20;
+  if (text.includes('bluetooth')) score -= 100;
+  if (text.includes('debug-console')) score -= 100;
+
+  return score;
 }
 
 export function parseGRBLResponse(line: string): GRBLResponse | null {

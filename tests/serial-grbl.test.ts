@@ -90,6 +90,22 @@ describe('GRBLController', () => {
     expect(controller.isPortConnected()).toBe(false);
   });
 
+  it('keeps waiting when GRBL emits informational lines before ok', async () => {
+    const fake = new ManualTransport();
+    const controller = new GRBLController(() => fake);
+
+    await controller.openPort('FAKE', 115200);
+    const command = controller.sendCommand('$1=255');
+
+    fake.emit('line', '[MSG:Reset to continue]');
+    fake.emit('line', '$1=255');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fake.writes).toEqual(['$1=255\n']);
+
+    fake.emit('line', 'ok');
+    await expect(command).resolves.toEqual({ type: 'ok', message: 'ok' });
+  });
+
   it('sends a soft reset byte when cancelling', async () => {
     const fake = new FakeTransport();
     const controller = new GRBLController(() => fake);
