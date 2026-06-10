@@ -402,8 +402,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   // Rotation handle: arm extends from top-center of the rotated bounding box
   const topCenter = rawBounds ? toDisplay(rawCenterX, rawBounds.minY) : null;
   const rotateHandle = topCenter ? {
-    x: topCenter.x - ROTATE_HANDLE_DIST * sinR,
-    y: topCenter.y - ROTATE_HANDLE_DIST * cosR
+    x: topCenter.x + (flipX ? 1 : -1) * ROTATE_HANDLE_DIST * sinR,
+    y: topCenter.y - (flipY ? 1 : -1) * ROTATE_HANDLE_DIST * cosR
   } : null;
 
   // --- Utilities ---
@@ -945,6 +945,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     setOffsetY(0);
     setImageScale(100);
     setRotation(0);
+    setFlipX(false);
+    setFlipY(false);
     setSourceFileName('');
     setSourceMimeType('');
     setSourceDataUrl('');
@@ -974,6 +976,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       setOffsetY(0);
       setImageScale(100);
       setRotation(0);
+      setFlipX(false);
+      setFlipY(false);
       setArtworkKind(isSvg ? 'svg' : 'raster');
       setSourceFileName(file.name);
       setSourceMimeType(inferImageMimeType(file));
