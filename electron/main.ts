@@ -21,6 +21,7 @@ import * as path from 'path';
 import { GRBLController, listSerialPorts } from '../src/core/serial-grbl';
 import { validateGCodeJob } from '../src/core/gcode';
 import { safeProjectFileName } from '../src/core/projectFiles';
+import { isRecord } from '../src/core/typeGuards';
 import ta4Profile from '../profiles/ta4.json';
 import { MachineProfile, Project } from '../src/types';
 
@@ -100,10 +101,6 @@ function delay(ms: number): Promise<void> {
 
 async function recoverFromSoftReset(controller: GRBLController): Promise<void> {
   await controller.wakeAfterReset(2000);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function validateMachineProfile(value: unknown): MachineProfile {

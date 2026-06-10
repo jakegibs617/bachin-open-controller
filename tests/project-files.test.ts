@@ -18,18 +18,18 @@ describe('Project file helpers', () => {
     savedAt: '2026-06-10T14:15:16.000Z'
   };
 
-  it('formats project save timestamps as year month day hour minute', () => {
-    expect(formatProjectFileTimestamp(new Date(2026, 5, 10, 9, 7, 30))).toBe('2026-06-10-09-07');
+  it('formats project save timestamps as UTC year month day hour minute', () => {
+    expect(formatProjectFileTimestamp(new Date('2026-06-11T04:07:30.000Z'))).toBe('2026-06-11-04-07');
   });
 
   it('includes the save timestamp in default project filenames', () => {
-    expect(safeProjectFileName(project, new Date(2026, 5, 10, 14, 15))).toBe(
+    expect(safeProjectFileName(project, new Date('2026-06-10T14:15:00.000Z'))).toBe(
       'fathers-day-card-2026-black.png-2026-06-10-14-15.boc.json'
     );
   });
 
   it('sanitizes project names before adding the save timestamp', () => {
-    expect(safeProjectFileName({ ...project, name: 'Father Day / Card!' }, new Date(2026, 0, 2, 3, 4))).toBe(
+    expect(safeProjectFileName({ ...project, name: 'Father Day / Card!' }, new Date('2026-01-02T03:04:00.000Z'))).toBe(
       'Father-Day-Card-2026-01-02-03-04.boc.json'
     );
   });

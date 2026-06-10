@@ -44,6 +44,8 @@ interface ProjectApi {
   save: (projectData: unknown, filePath?: string) => Promise<IpcResult>;
 }
 
+type LoadedSavedProjectData = SavedProjectData & { filePath?: string };
+
 interface CanvasProps {
   units: LengthUnit;
   preparedJob: PreparedJob | null;
@@ -332,6 +334,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const [sourceDataUrl, setSourceDataUrl] = React.useState('');
   const [projectId, setProjectId] = React.useState(() => `project-${Date.now()}`);
   const [projectCreated, setProjectCreated] = React.useState(() => new Date().toISOString());
+  const [loadedFilePath, setLoadedFilePath] = React.useState<string | undefined>(undefined);
   const offsetXRef = React.useRef(0);
   const offsetYRef = React.useRef(0);
   const imageScaleXRef = React.useRef(100);
@@ -803,8 +806,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
             penSpeed
           }
         }
-      }],
-      savedAt: ''
+      }]
     });
   };
 
@@ -822,25 +824,27 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       return;
     }
 
-    const result = await api.save(project);
+    const result = await api.save(project, loadedFilePath);
     if (!result.ok) {
       setError(result.error);
       return;
     }
 
-    const saved = result.data as (SavedProjectData & { filePath?: string }) | undefined;
+    const saved = result.data as LoadedSavedProjectData | undefined;
+    setLoadedFilePath(saved?.filePath ?? loadedFilePath);
     setMessage(saved?.filePath
       ? `Saved plan to your Downloads folder: ${saved.filePath}.`
       : 'Saved plan to your Downloads folder.');
   };
 
-  const applyLoadedProject = (project: SavedProjectData, importedFileName: string) => {
+  const applyLoadedProject = (project: LoadedSavedProjectData, importedFileName: string) => {
     const object = project.objects?.[0];
     if (!object || !Array.isArray(object.paths) || object.paths.length === 0) {
-      throw new Error('Plan file does not contain drawable artwork.');
+      throw new Error('Plan file has no artwork objects.');
     }
 
     const metadata = object.metadata;
+    setLoadedFilePath(project.filePath);
     setProjectId(project.id || `project-${Date.now()}`);
     setProjectCreated(project.created || new Date().toISOString());
     setRawPaths(object.paths);
@@ -897,27 +901,43 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     );
   };
 
-  const parseSavedProjectFile = async (file: File): Promise<SavedProjectData | null> => {
+  const parseSavedProjectFile = async (file: File): Promise<LoadedSavedProjectData | null> => {
+    let contents: string;
     try {
-      const parsed = JSON.parse(await file.text());
-      return isSavedProjectData(parsed) ? parsed : null;
-    } catch {
-      return null;
+      contents = await file.text();
+    } catch (caught) {
+      const reason = caught instanceof Error ? caught.message : String(caught);
+      throw new Error(`Could not read plan file: ${reason}`);
+    }
+
+    try {
+      const parsed = JSON.parse(contents);
+      if (!isSavedProjectData(parsed)) return null;
+      const parsedRecord = parsed as LoadedSavedProjectData;
+      const parsedFilePath = typeof parsedRecord.filePath === 'string' && parsedRecord.filePath !== ''
+        ? parsedRecord.filePath
+        : undefined;
+      const inputFilePath = typeof (file as File & { path?: unknown }).path === 'string'
+        ? (file as File & { path: string }).path
+        : undefined;
+      return { ...parsed, filePath: parsedFilePath ?? inputFilePath };
+    } catch (caught) {
+      if (caught instanceof SyntaxError) return null;
+      throw caught;
     }
   };
 
-  const handleLoadProject = async (file: File | undefined) => {
-    if (!file) return;
-    setError(null);
-
-    try {
-      const project = await parseSavedProjectFile(file);
-      if (!project) throw new Error('Plan file must contain a saved Bachin Open Controller project.');
-      applyLoadedProject(project, file.name);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-      setMessage('Plan load failed.');
+  const loadProjectFile = async (file: File): Promise<boolean> => {
+    const project = await parseSavedProjectFile(file);
+    if (!project) {
+      return false;
     }
+    applyLoadedProject(project, file.name);
+    return true;
+  };
+
+  const handleLoadProject = async (file: File | undefined) => {
+    await handleOpenFile(file);
   };
 
   const shouldLoadAsProject = (file: File): boolean => {
@@ -928,33 +948,23 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const handleOpenFile = async (file: File | undefined) => {
     if (!file) return;
     const startedAt = performance.now();
-    const savedProject = await parseSavedProjectFile(file);
+    const isProjectCandidate = shouldLoadAsProject(file);
     console.info('[Artwork] open file', {
       name: file.name,
       type: file.type || '(empty)',
       size: file.size,
-      route: savedProject || shouldLoadAsProject(file) ? 'plan' : 'artwork'
+      route: isProjectCandidate ? 'plan' : 'artwork'
     });
 
-    if (savedProject) {
-      setError(null);
+    if (isProjectCandidate) {
       try {
-        applyLoadedProject(savedProject, file.name);
+        setError(null);
+        const loaded = await loadProjectFile(file);
+        if (!loaded) throw new Error('Plan file must contain a saved Bachin Open Controller project.');
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));
         setMessage('Plan load failed.');
       }
-      console.info('[Artwork] open complete', {
-        name: file.name,
-        route: 'plan',
-        durationMs: Math.round(performance.now() - startedAt)
-      });
-      return;
-    }
-
-    if (shouldLoadAsProject(file)) {
-      setError('Plan file must contain a saved Bachin Open Controller project.');
-      setMessage('Plan load failed.');
       console.info('[Artwork] open complete', {
         name: file.name,
         route: 'plan',
@@ -988,6 +998,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     setSourceDataUrl('');
     setProjectId(`project-${Date.now()}`);
     setProjectCreated(new Date().toISOString());
+    setLoadedFilePath(undefined);
     onPreparedJobChange(null);
     setMessage('Import an SVG path file to prepare a TA4 plotting job.');
     setError(null);
@@ -1021,6 +1032,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       rasterSourceFileRef.current = isSvg ? null : file;
       setProjectId(`project-${Date.now()}`);
       setProjectCreated(new Date().toISOString());
+      setLoadedFilePath(undefined);
 
       const generator = new GCodeGenerator(profile, canvas, { travelSpeed, drawingSpeed, penSpeed });
       const result = generator.generate(paths);

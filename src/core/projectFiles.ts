@@ -6,11 +6,11 @@ function padDatePart(value: number): string {
 
 export function formatProjectFileTimestamp(date: Date): string {
   return [
-    date.getFullYear(),
-    padDatePart(date.getMonth() + 1),
-    padDatePart(date.getDate()),
-    padDatePart(date.getHours()),
-    padDatePart(date.getMinutes())
+    date.getUTCFullYear(),
+    padDatePart(date.getUTCMonth() + 1),
+    padDatePart(date.getUTCDate()),
+    padDatePart(date.getUTCHours()),
+    padDatePart(date.getUTCMinutes())
   ].join('-');
 }
 

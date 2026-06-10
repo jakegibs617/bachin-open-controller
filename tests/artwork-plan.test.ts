@@ -9,6 +9,15 @@ import {
 import { Path } from '../src/types';
 
 describe('Artwork plan helpers', () => {
+  const path: Path = {
+    id: 'line',
+    segments: [
+      { x: 0, y: 0, penDown: false },
+      { x: 10, y: 10, penDown: true }
+    ],
+    bounds: { minX: 0, maxX: 10, minY: 0, maxY: 10 }
+  };
+
   const savedProject: SavedProjectData = {
     id: 'project-1',
     name: 'Original project name',
@@ -21,7 +30,43 @@ describe('Artwork plan helpers', () => {
       offsetX: 0,
       offsetY: 0
     },
-    objects: [],
+    objects: [{
+      id: 'artwork-1',
+      type: 'svg_path',
+      source: '',
+      transform: {
+        x: 0,
+        y: 0,
+        scale: 100,
+        scaleY: 100,
+        rotation: 0
+      },
+      visible: true,
+      paths: [path],
+      metadata: {
+        formatVersion: 1,
+        artworkKind: 'svg',
+        fileName: 'art.svg',
+        mimeType: 'image/svg+xml',
+        sourceDataUrl: '',
+        rasterSettings: {
+          mode: 'outline',
+          detail: 'draft',
+          threshold: 170,
+          brightness: 0,
+          contrast: 100,
+          blurRadius: 0,
+          adaptiveThreshold: false,
+          smoothingTolerance: 0,
+          invertRaster: false
+        },
+        actionSpeeds: {
+          travelSpeed: 3000,
+          drawingSpeed: 2000,
+          penSpeed: 1000
+        }
+      }
+    }],
     savedAt: '2026-06-01T10:00:00.000Z'
   };
 
@@ -29,6 +74,11 @@ describe('Artwork plan helpers', () => {
     expect(isSavedProjectData(savedProject)).toBe(true);
     expect(isSavedProjectData({ ...savedProject, name: 'renamed-file-is-not-used' })).toBe(true);
     expect(isSavedProjectData({ ...savedProject, savedAt: '' })).toBe(false);
+  });
+
+  it('rejects invalid units and empty artwork lists in saved project data', () => {
+    expect(isSavedProjectData({ ...savedProject, units: 'inches' })).toBe(false);
+    expect(isSavedProjectData({ ...savedProject, objects: [] })).toBe(false);
   });
 
   it('updates savedAt to the current save timestamp', () => {
