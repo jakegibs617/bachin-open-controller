@@ -77,6 +77,8 @@ export interface Transform {
   scale: number;
   scaleY?: number;
   rotation: number;
+  flipX?: boolean;
+  flipY?: boolean;
 }
 
 export interface Canvas {

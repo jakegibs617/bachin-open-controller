@@ -58,4 +58,42 @@ describe('Artwork plan helpers', () => {
     expect(result.segments[1].x).toBeCloseTo(-5);
     expect(result.segments[1].y).toBeCloseTo(10);
   });
+
+  it('flips artwork horizontally around its raw center', () => {
+    const path: Path = {
+      id: 'horizontal',
+      segments: [
+        { x: 0, y: 10, penDown: false },
+        { x: 10, y: 10, penDown: true }
+      ],
+      bounds: { minX: 0, maxX: 10, minY: 10, maxY: 10 }
+    };
+
+    const [result] = applyArtworkTransform([path], 5, 10, 100, 100, 0, 0, 0, true, false);
+
+    expect(result.segments).toEqual([
+      { x: 10, y: 10, penDown: false },
+      { x: 0, y: 10, penDown: true }
+    ]);
+    expect(result.bounds).toEqual({ minX: 0, maxX: 10, minY: 10, maxY: 10 });
+  });
+
+  it('flips artwork vertically around its raw center', () => {
+    const path: Path = {
+      id: 'vertical',
+      segments: [
+        { x: 5, y: 0, penDown: false },
+        { x: 5, y: 20, penDown: true }
+      ],
+      bounds: { minX: 5, maxX: 5, minY: 0, maxY: 20 }
+    };
+
+    const [result] = applyArtworkTransform([path], 5, 10, 100, 100, 0, 0, 0, false, true);
+
+    expect(result.segments).toEqual([
+      { x: 5, y: 20, penDown: false },
+      { x: 5, y: 0, penDown: true }
+    ]);
+    expect(result.bounds).toEqual({ minX: 5, maxX: 5, minY: 0, maxY: 20 });
+  });
 });

@@ -128,6 +128,8 @@ interface DragState {
   startScaleX: number;
   startScaleY: number;
   startRotation: number;
+  startFlipX: boolean;
+  startFlipY: boolean;
   startAngle: number; // radians from display center to startPt (used for rotate)
   rawBounds: BoundingBox;
   center: { x: number; y: number }; // raw image center
@@ -320,6 +322,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const [imageScaleX, _setImageScaleX] = React.useState(100);
   const [imageScaleY, _setImageScaleY] = React.useState(100);
   const [rotation, _setRotation] = React.useState(0);
+  const [flipX, _setFlipX] = React.useState(false);
+  const [flipY, _setFlipY] = React.useState(false);
   const [artworkKind, setArtworkKind] = React.useState<ArtworkKind>('svg');
   const [sourceFileName, setSourceFileName] = React.useState('');
   const [sourceMimeType, setSourceMimeType] = React.useState('');
@@ -331,6 +335,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const imageScaleXRef = React.useRef(100);
   const imageScaleYRef = React.useRef(100);
   const rotationRef = React.useRef(0);
+  const flipXRef = React.useRef(false);
+  const flipYRef = React.useRef(false);
   const setOffsetX = (v: number) => { offsetXRef.current = v; _setOffsetX(v); };
   const setOffsetY = (v: number) => { offsetYRef.current = v; _setOffsetY(v); };
   const setImageScaleX = (v: number) => { imageScaleXRef.current = v; _setImageScaleX(v); };
@@ -340,6 +346,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     setImageScaleY(v);
   };
   const setRotation = (v: number) => { rotationRef.current = v; _setRotation(v); };
+  const setFlipX = (v: boolean) => { flipXRef.current = v; _setFlipX(v); };
+  const setFlipY = (v: boolean) => { flipYRef.current = v; _setFlipY(v); };
 
   const jobNameRef = React.useRef('');
   React.useEffect(() => { jobNameRef.current = preparedJob?.name ?? ''; }, [preparedJob]);
@@ -366,8 +374,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const imageWidth = rawWidth * imageScaleX / 100;
   const imageHeight = rawHeight * imageScaleY / 100;
 
-  const sx = imageScaleX / 100;
-  const sy = imageScaleY / 100;
+  const sx = (imageScaleX / 100) * (flipX ? -1 : 1);
+  const sy = (imageScaleY / 100) * (flipY ? -1 : 1);
   const rad = (rotation * Math.PI) / 180;
   const cosR = Math.cos(rad);
   const sinR = Math.sin(rad);
@@ -419,22 +427,32 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     scaleYPct: number,
     dx: number,
     dy: number,
-    rotateDeg: number
+    rotateDeg: number,
+    nextFlipX: boolean = flipXRef.current,
+    nextFlipY: boolean = flipYRef.current
   ) => {
-    const transformed = applyArtworkTransform(paths, cx, cy, scaleXPct, scaleYPct, dx, dy, rotateDeg);
+    const transformed = applyArtworkTransform(paths, cx, cy, scaleXPct, scaleYPct, dx, dy, rotateDeg, nextFlipX, nextFlipY);
     const generator = new GCodeGenerator(profile, canvas, { travelSpeed, drawingSpeed, penSpeed });
     const result = generator.generate(transformed);
     onPreparedJobChange({ name, paths: transformed, gcode: result.gcode, warnings: result.warnings });
     setMessage(`${name}: ${transformed.length} stroke${transformed.length === 1 ? '' : 's'}, ${result.gcode.length} G-code lines.`);
   };
 
-  const applyTransformAndRegenerate = (scaleXPct: number, scaleYPct: number, dx: number, dy: number, rotateDeg: number) => {
+  const applyTransformAndRegenerate = (
+    scaleXPct: number,
+    scaleYPct: number,
+    dx: number,
+    dy: number,
+    rotateDeg: number,
+    nextFlipX: boolean = flipXRef.current,
+    nextFlipY: boolean = flipYRef.current
+  ) => {
     const paths = rawPathsRef.current;
     if (!paths) return;
     const bounds = computeAllBounds(paths);
     const cx = (bounds.minX + bounds.maxX) / 2;
     const cy = (bounds.minY + bounds.maxY) / 2;
-    regenerateJob(paths, jobNameRef.current, cx, cy, scaleXPct, scaleYPct, dx, dy, rotateDeg);
+    regenerateJob(paths, jobNameRef.current, cx, cy, scaleXPct, scaleYPct, dx, dy, rotateDeg, nextFlipX, nextFlipY);
   };
 
   const getRasterSettings = (): RasterTraceSettings => ({
@@ -484,6 +502,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       const dx = offsetXRef.current;
       const dy = offsetYRef.current;
       const rotateDeg = rotationRef.current;
+      const nextFlipX = flipXRef.current;
+      const nextFlipY = flipYRef.current;
       regenerateJob(
         paths,
         jobNameRef.current || sourceFileName || file.name,
@@ -493,7 +513,9 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
         scaleY,
         dx,
         dy,
-        rotateDeg
+        rotateDeg,
+        nextFlipX,
+        nextFlipY
       );
     } catch (caught) {
       if (reloadId !== rasterReloadSeq.current) return;
@@ -528,6 +550,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       startScaleX: imageScaleXRef.current,
       startScaleY: imageScaleYRef.current,
       startRotation: rotationRef.current,
+      startFlipX: flipXRef.current,
+      startFlipY: flipYRef.current,
       startAngle: 0,
       rawBounds: bounds,
       center: { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 }
@@ -550,6 +574,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       startScaleX: imageScaleXRef.current,
       startScaleY: imageScaleYRef.current,
       startRotation: rotationRef.current,
+      startFlipX: flipXRef.current,
+      startFlipY: flipYRef.current,
       startAngle: 0,
       rawBounds: bounds,
       center: { x: cx, y: cy }
@@ -574,6 +600,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       startScaleX: imageScaleXRef.current,
       startScaleY: imageScaleYRef.current,
       startRotation: rotationRef.current,
+      startFlipX: flipXRef.current,
+      startFlipY: flipYRef.current,
       startAngle: Math.atan2(pt.y - displayCy, pt.x - displayCx),
       rawBounds: bounds,
       center: { x: cx, y: cy }
@@ -595,8 +623,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     } else if (state.mode === 'resize') {
       const displayCx = state.center.x + state.startOffset.x;
       const displayCy = state.center.y + state.startOffset.y;
-      const sx0 = state.startScaleX / 100;
-      const sy0 = state.startScaleY / 100;
+      const sx0 = (state.startScaleX / 100) * (state.startFlipX ? -1 : 1);
+      const sy0 = (state.startScaleY / 100) * (state.startFlipY ? -1 : 1);
       const rad0 = (state.startRotation * Math.PI) / 180;
       const cosR0 = Math.cos(rad0);
       const sinR0 = Math.sin(rad0);
@@ -662,12 +690,30 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     applyTransformAndRegenerate(imageScaleXRef.current, imageScaleYRef.current, offsetXRef.current, offsetYRef.current, newRotation);
   };
 
+  const handleFlipChange = (axis: 'x' | 'y') => {
+    const nextFlipX = axis === 'x' ? !flipXRef.current : flipXRef.current;
+    const nextFlipY = axis === 'y' ? !flipYRef.current : flipYRef.current;
+    setFlipX(nextFlipX);
+    setFlipY(nextFlipY);
+    applyTransformAndRegenerate(
+      imageScaleXRef.current,
+      imageScaleYRef.current,
+      offsetXRef.current,
+      offsetYRef.current,
+      rotationRef.current,
+      nextFlipX,
+      nextFlipY
+    );
+  };
+
   const handleResetTransform = () => {
     setOffsetX(0);
     setOffsetY(0);
     setImageScale(100);
     setRotation(0);
-    applyTransformAndRegenerate(100, 100, 0, 0, 0);
+    setFlipX(false);
+    setFlipY(false);
+    applyTransformAndRegenerate(100, 100, 0, 0, 0, false, false);
   };
 
   const handleSpeedChange = (kind: 'travel' | 'drawing' | 'pen', value: number) => {
@@ -726,7 +772,9 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           y: offsetYRef.current,
           scale: imageScaleXRef.current,
           scaleY: imageScaleYRef.current,
-          rotation: rotationRef.current
+          rotation: rotationRef.current,
+          flipX: flipXRef.current,
+          flipY: flipYRef.current
         },
         visible: true,
         paths,
@@ -804,6 +852,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       setImageScaleX(Number(object.transform?.scale ?? 100));
       setImageScaleY(Number(object.transform?.scaleY ?? object.transform?.scale ?? 100));
       setRotation(Number(object.transform?.rotation ?? 0));
+      setFlipX(Boolean(object.transform?.flipX));
+      setFlipY(Boolean(object.transform?.flipY));
       setArtworkKind(metadata?.artworkKind ?? (object.type === 'raster_image' ? 'raster' : 'svg'));
       setSourceFileName(metadata?.fileName ?? project.name ?? file.name);
       setSourceMimeType(metadata?.mimeType ?? '');
@@ -843,7 +893,9 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
         Number(object.transform?.scaleY ?? object.transform?.scale ?? 100),
         Number(object.transform?.x ?? 0),
         Number(object.transform?.y ?? 0),
-        Number(object.transform?.rotation ?? 0)
+        Number(object.transform?.rotation ?? 0),
+        Boolean(object.transform?.flipX),
+        Boolean(object.transform?.flipY)
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -1520,6 +1572,23 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
             onChange={(e) => handleRotationChange(Number(e.target.value))}
           />
           <span className="unit-label">°</span>
+
+          <button
+            type="button"
+            className={`toolbar-btn transform-btn${flipX ? ' active' : ''}`}
+            aria-pressed={flipX}
+            onClick={() => handleFlipChange('x')}
+          >
+            Flip H
+          </button>
+          <button
+            type="button"
+            className={`toolbar-btn transform-btn${flipY ? ' active' : ''}`}
+            aria-pressed={flipY}
+            onClick={() => handleFlipChange('y')}
+          >
+            Flip V
+          </button>
         </section>
       )}
 

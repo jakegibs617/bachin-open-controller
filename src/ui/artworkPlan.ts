@@ -43,6 +43,8 @@ export interface SavedCanvasObject {
     scale: number;
     scaleY: number;
     rotation: number;
+    flipX?: boolean;
+    flipY?: boolean;
   };
   visible: boolean;
   paths: Path[];
@@ -84,10 +86,12 @@ export function applyArtworkTransform(
   scaleY: number,
   dx: number,
   dy: number,
-  rotateDeg: number
+  rotateDeg: number,
+  flipX: boolean = false,
+  flipY: boolean = false
 ): Path[] {
-  const sx = scaleX / 100;
-  const sy = scaleY / 100;
+  const sx = (scaleX / 100) * (flipX ? -1 : 1);
+  const sy = (scaleY / 100) * (flipY ? -1 : 1);
   const rad = (rotateDeg * Math.PI) / 180;
   const cosR = Math.cos(rad);
   const sinR = Math.sin(rad);
