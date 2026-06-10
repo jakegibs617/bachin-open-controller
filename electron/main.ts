@@ -20,6 +20,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { GRBLController, listSerialPorts } from '../src/core/serial-grbl';
 import { validateGCodeJob } from '../src/core/gcode';
+import { safeProjectFileName } from '../src/core/projectFiles';
+import { isRecord } from '../src/core/typeGuards';
 import ta4Profile from '../profiles/ta4.json';
 import { MachineProfile, Project } from '../src/types';
 
@@ -101,10 +103,6 @@ async function recoverFromSoftReset(controller: GRBLController): Promise<void> {
   await controller.wakeAfterReset(2000);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function validateMachineProfile(value: unknown): MachineProfile {
   if (!isRecord(value)) {
     throw new Error('Machine profile must be an object');
@@ -157,16 +155,10 @@ function validateProject(value: unknown): SavedProject {
   return value as unknown as SavedProject;
 }
 
-function safeProjectFileName(project: SavedProject): string {
-  const baseName = project.name || project.id || 'project';
-  const safeName = baseName.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'project';
-  return `${safeName}.boc.json`;
-}
-
-async function defaultProjectPath(project: SavedProject): Promise<string> {
+async function defaultProjectPath(project: SavedProject, savedAt: Date): Promise<string> {
   const projectDir = app.getPath('downloads');
   await fs.mkdir(projectDir, { recursive: true });
-  return path.join(projectDir, safeProjectFileName(project));
+  return path.join(projectDir, safeProjectFileName(project, savedAt));
 }
 
 function profilesDirectory(): string {
@@ -419,11 +411,12 @@ ipcMain.handle('project:open', async (_event, filePath: string) => {
 
 ipcMain.handle('project:save', async (_event, projectData: unknown, requestedPath?: string) => {
   return runSerialAction(async () => {
+    const savedAt = new Date();
     const project = validateProject({
       ...(isRecord(projectData) ? projectData : {}),
-      savedAt: new Date().toISOString()
+      savedAt: savedAt.toISOString()
     });
-    const filePath = requestedPath || project.filePath || await defaultProjectPath(project);
+    const filePath = requestedPath || project.filePath || await defaultProjectPath(project, savedAt);
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, `${JSON.stringify({ ...project, filePath: undefined }, null, 2)}\n`, 'utf8');
     return { ...project, filePath };

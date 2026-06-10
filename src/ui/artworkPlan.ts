@@ -1,3 +1,4 @@
+import { isRecord } from '../core/typeGuards';
 import { Canvas as CanvasModel, LengthUnit, Path } from '../types';
 
 export type ArtworkKind = 'svg' | 'raster';
@@ -60,6 +61,37 @@ export interface SavedProjectData {
   canvas: CanvasModel;
   objects: SavedCanvasObject[];
   savedAt: string;
+}
+
+const VALID_UNITS: ReadonlySet<string> = new Set(['mm', 'cm', 'in', 'ft']);
+
+export function isSavedProjectData(value: unknown): value is SavedProjectData {
+  if (!isRecord(value)) return false;
+
+  const stringFields = ['id', 'name', 'created', 'machineProfileId', 'units', 'savedAt'];
+  if (!stringFields.every((field) => typeof value[field] === 'string' && value[field] !== '')) {
+    return false;
+  }
+  if (!VALID_UNITS.has(value.units as string)) return false;
+
+  const projectCanvas = value.canvas;
+  if (!isRecord(projectCanvas)) return false;
+  const canvasFields = ['width', 'height', 'offsetX', 'offsetY'];
+  if (!canvasFields.every((field) => typeof projectCanvas[field] === 'number')) {
+    return false;
+  }
+
+  return Array.isArray(value.objects) && value.objects.length > 0;
+}
+
+export function withSavedAtNow(
+  project: Omit<SavedProjectData, 'savedAt'> | SavedProjectData,
+  now: Date = new Date()
+): SavedProjectData {
+  return {
+    ...project,
+    savedAt: now.toISOString()
+  };
 }
 
 export function inferImageMimeType(file: FileLike): string {

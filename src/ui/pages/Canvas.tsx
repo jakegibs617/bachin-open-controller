@@ -31,7 +31,9 @@ import {
   SavedProjectData,
   applyArtworkTransform,
   inferImageMimeType,
-  isPhotoshopSignature
+  isPhotoshopSignature,
+  isSavedProjectData,
+  withSavedAtNow
 } from '../artworkPlan';
 import ta4Profile from '../../../profiles/ta4.json';
 import { PreparedJob } from '../App';
@@ -41,6 +43,8 @@ type IpcResult<T = unknown> = { ok: true; data?: T } | { ok: false; error: strin
 interface ProjectApi {
   save: (projectData: unknown, filePath?: string) => Promise<IpcResult>;
 }
+
+type LoadedSavedProjectData = SavedProjectData & { filePath?: string };
 
 interface CanvasProps {
   units: LengthUnit;
@@ -330,6 +334,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const [sourceDataUrl, setSourceDataUrl] = React.useState('');
   const [projectId, setProjectId] = React.useState(() => `project-${Date.now()}`);
   const [projectCreated, setProjectCreated] = React.useState(() => new Date().toISOString());
+  const [loadedFilePath, setLoadedFilePath] = React.useState<string | undefined>(undefined);
   const offsetXRef = React.useRef(0);
   const offsetYRef = React.useRef(0);
   const imageScaleXRef = React.useRef(100);
@@ -756,7 +761,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     const name = jobNameRef.current || sourceFileName || 'Untitled artwork';
     if (!paths || !sourceDataUrl) return null;
 
-    return {
+    return withSavedAtNow({
       id: projectId,
       name,
       created: projectCreated,
@@ -801,9 +806,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
             penSpeed
           }
         }
-      }],
-      savedAt: new Date().toISOString()
-    };
+      }]
+    });
   };
 
   const handleSaveProject = async () => {
@@ -820,87 +824,120 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       return;
     }
 
-    const result = await api.save(project);
+    const result = await api.save(project, loadedFilePath);
     if (!result.ok) {
       setError(result.error);
       return;
     }
 
-    const saved = result.data as (SavedProjectData & { filePath?: string }) | undefined;
+    const saved = result.data as LoadedSavedProjectData | undefined;
+    setLoadedFilePath(saved?.filePath ?? loadedFilePath);
     setMessage(saved?.filePath
       ? `Saved plan to your Downloads folder: ${saved.filePath}.`
       : 'Saved plan to your Downloads folder.');
   };
 
-  const handleLoadProject = async (file: File | undefined) => {
-    if (!file) return;
-    setError(null);
+  const applyLoadedProject = (project: LoadedSavedProjectData, importedFileName: string) => {
+    const object = project.objects?.[0];
+    if (!object || !Array.isArray(object.paths) || object.paths.length === 0) {
+      throw new Error('Plan file has no artwork objects.');
+    }
+
+    const metadata = object.metadata;
+    setLoadedFilePath(project.filePath);
+    setProjectId(project.id || `project-${Date.now()}`);
+    setProjectCreated(project.created || new Date().toISOString());
+    setRawPaths(object.paths);
+    setOffsetX(Number(object.transform?.x ?? 0));
+    setOffsetY(Number(object.transform?.y ?? 0));
+    setImageScaleX(Number(object.transform?.scale ?? 100));
+    setImageScaleY(Number(object.transform?.scaleY ?? object.transform?.scale ?? 100));
+    setRotation(Number(object.transform?.rotation ?? 0));
+    setFlipX(Boolean(object.transform?.flipX));
+    setFlipY(Boolean(object.transform?.flipY));
+    setArtworkKind(metadata?.artworkKind ?? (object.type === 'raster_image' ? 'raster' : 'svg'));
+    setSourceFileName(metadata?.fileName ?? project.name);
+    setSourceMimeType(metadata?.mimeType ?? '');
+    setSourceDataUrl(metadata?.sourceDataUrl ?? object.source ?? '');
+    rasterSourceFileRef.current = null;
+
+    if (metadata?.rasterSettings) {
+      setRasterMode(metadata.rasterSettings.mode);
+      setRasterDetail(metadata.rasterSettings.detail);
+      setThreshold(metadata.rasterSettings.threshold);
+      setBrightness(metadata.rasterSettings.brightness);
+      setContrast(metadata.rasterSettings.contrast);
+      setBlurRadius(metadata.rasterSettings.blurRadius);
+      setAdaptiveThreshold(metadata.rasterSettings.adaptiveThreshold);
+      setSmoothingTolerance(metadata.rasterSettings.smoothingTolerance);
+      setInvertRaster(metadata.rasterSettings.invertRaster);
+    }
+
+    if (metadata?.actionSpeeds) {
+      setTravelSpeed(metadata.actionSpeeds.travelSpeed);
+      setDrawingSpeed(metadata.actionSpeeds.drawingSpeed);
+      setPenSpeed(metadata.actionSpeeds.penSpeed);
+    }
+
+    const bounds = computeAllBounds(object.paths);
+    console.info('[Artwork] loaded plan', {
+      name: project.name,
+      importedFileName,
+      paths: object.paths.length,
+      transform: object.transform
+    });
+    regenerateJob(
+      object.paths,
+      project.name || metadata?.fileName || 'Untitled artwork',
+      (bounds.minX + bounds.maxX) / 2,
+      (bounds.minY + bounds.maxY) / 2,
+      Number(object.transform?.scale ?? 100),
+      Number(object.transform?.scaleY ?? object.transform?.scale ?? 100),
+      Number(object.transform?.x ?? 0),
+      Number(object.transform?.y ?? 0),
+      Number(object.transform?.rotation ?? 0),
+      Boolean(object.transform?.flipX),
+      Boolean(object.transform?.flipY)
+    );
+  };
+
+  const parseSavedProjectFile = async (file: File): Promise<LoadedSavedProjectData | null> => {
+    let contents: string;
+    try {
+      contents = await file.text();
+    } catch (caught) {
+      const reason = caught instanceof Error ? caught.message : String(caught);
+      throw new Error(`Could not read plan file: ${reason}`);
+    }
 
     try {
-      const project = JSON.parse(await file.text()) as SavedProjectData & { filePath?: string };
-      const object = project.objects?.[0];
-      if (!object || !Array.isArray(object.paths) || object.paths.length === 0) {
-        throw new Error('Plan file does not contain drawable artwork.');
-      }
-
-      const metadata = object.metadata;
-      setProjectId(project.id || `project-${Date.now()}`);
-      setProjectCreated(project.created || new Date().toISOString());
-      setRawPaths(object.paths);
-      setOffsetX(Number(object.transform?.x ?? 0));
-      setOffsetY(Number(object.transform?.y ?? 0));
-      setImageScaleX(Number(object.transform?.scale ?? 100));
-      setImageScaleY(Number(object.transform?.scaleY ?? object.transform?.scale ?? 100));
-      setRotation(Number(object.transform?.rotation ?? 0));
-      setFlipX(Boolean(object.transform?.flipX));
-      setFlipY(Boolean(object.transform?.flipY));
-      setArtworkKind(metadata?.artworkKind ?? (object.type === 'raster_image' ? 'raster' : 'svg'));
-      setSourceFileName(metadata?.fileName ?? project.name ?? file.name);
-      setSourceMimeType(metadata?.mimeType ?? '');
-      setSourceDataUrl(metadata?.sourceDataUrl ?? object.source ?? '');
-      rasterSourceFileRef.current = null;
-
-      if (metadata?.rasterSettings) {
-        setRasterMode(metadata.rasterSettings.mode);
-        setRasterDetail(metadata.rasterSettings.detail);
-        setThreshold(metadata.rasterSettings.threshold);
-        setBrightness(metadata.rasterSettings.brightness);
-        setContrast(metadata.rasterSettings.contrast);
-        setBlurRadius(metadata.rasterSettings.blurRadius);
-        setAdaptiveThreshold(metadata.rasterSettings.adaptiveThreshold);
-        setSmoothingTolerance(metadata.rasterSettings.smoothingTolerance);
-        setInvertRaster(metadata.rasterSettings.invertRaster);
-      }
-
-      if (metadata?.actionSpeeds) {
-        setTravelSpeed(metadata.actionSpeeds.travelSpeed);
-        setDrawingSpeed(metadata.actionSpeeds.drawingSpeed);
-        setPenSpeed(metadata.actionSpeeds.penSpeed);
-      }
-
-      const bounds = computeAllBounds(object.paths);
-      console.info('[Artwork] loaded plan', {
-        name: project.name || file.name,
-        paths: object.paths.length,
-        transform: object.transform
-      });
-      regenerateJob(
-        object.paths,
-        project.name || metadata?.fileName || file.name,
-        (bounds.minX + bounds.maxX) / 2,
-        (bounds.minY + bounds.maxY) / 2,
-        Number(object.transform?.scale ?? 100),
-        Number(object.transform?.scaleY ?? object.transform?.scale ?? 100),
-        Number(object.transform?.x ?? 0),
-        Number(object.transform?.y ?? 0),
-        Number(object.transform?.rotation ?? 0),
-        Boolean(object.transform?.flipX),
-        Boolean(object.transform?.flipY)
-      );
+      const parsed = JSON.parse(contents);
+      if (!isSavedProjectData(parsed)) return null;
+      const parsedRecord = parsed as LoadedSavedProjectData;
+      const parsedFilePath = typeof parsedRecord.filePath === 'string' && parsedRecord.filePath !== ''
+        ? parsedRecord.filePath
+        : undefined;
+      const inputFilePath = typeof (file as File & { path?: unknown }).path === 'string'
+        ? (file as File & { path: string }).path
+        : undefined;
+      return { ...parsed, filePath: parsedFilePath ?? inputFilePath };
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-      setMessage('Plan load failed.');
+      if (caught instanceof SyntaxError) return null;
+      throw caught;
     }
+  };
+
+  const loadProjectFile = async (file: File): Promise<boolean> => {
+    const project = await parseSavedProjectFile(file);
+    if (!project) {
+      return false;
+    }
+    applyLoadedProject(project, file.name);
+    return true;
+  };
+
+  const handleLoadProject = async (file: File | undefined) => {
+    await handleOpenFile(file);
   };
 
   const shouldLoadAsProject = (file: File): boolean => {
@@ -911,14 +948,23 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const handleOpenFile = async (file: File | undefined) => {
     if (!file) return;
     const startedAt = performance.now();
+    const isProjectCandidate = shouldLoadAsProject(file);
     console.info('[Artwork] open file', {
       name: file.name,
       type: file.type || '(empty)',
       size: file.size,
-      route: shouldLoadAsProject(file) ? 'plan' : 'artwork'
+      route: isProjectCandidate ? 'plan' : 'artwork'
     });
-    if (shouldLoadAsProject(file)) {
-      await handleLoadProject(file);
+
+    if (isProjectCandidate) {
+      try {
+        setError(null);
+        const loaded = await loadProjectFile(file);
+        if (!loaded) throw new Error('Plan file must contain a saved Bachin Open Controller project.');
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : String(caught));
+        setMessage('Plan load failed.');
+      }
       console.info('[Artwork] open complete', {
         name: file.name,
         route: 'plan',
@@ -952,6 +998,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     setSourceDataUrl('');
     setProjectId(`project-${Date.now()}`);
     setProjectCreated(new Date().toISOString());
+    setLoadedFilePath(undefined);
     onPreparedJobChange(null);
     setMessage('Import an SVG path file to prepare a TA4 plotting job.');
     setError(null);
@@ -985,6 +1032,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       rasterSourceFileRef.current = isSvg ? null : file;
       setProjectId(`project-${Date.now()}`);
       setProjectCreated(new Date().toISOString());
+      setLoadedFilePath(undefined);
 
       const generator = new GCodeGenerator(profile, canvas, { travelSpeed, drawingSpeed, penSpeed });
       const result = generator.generate(paths);

@@ -1,11 +1,94 @@
 import {
   applyArtworkTransform,
   inferImageMimeType,
-  isPhotoshopSignature
+  isPhotoshopSignature,
+  isSavedProjectData,
+  SavedProjectData,
+  withSavedAtNow
 } from '../src/ui/artworkPlan';
 import { Path } from '../src/types';
 
 describe('Artwork plan helpers', () => {
+  const path: Path = {
+    id: 'line',
+    segments: [
+      { x: 0, y: 0, penDown: false },
+      { x: 10, y: 10, penDown: true }
+    ],
+    bounds: { minX: 0, maxX: 10, minY: 0, maxY: 10 }
+  };
+
+  const savedProject: SavedProjectData = {
+    id: 'project-1',
+    name: 'Original project name',
+    created: '2026-06-01T10:00:00.000Z',
+    machineProfileId: 'ta4',
+    units: 'cm',
+    canvas: {
+      width: 190,
+      height: 280,
+      offsetX: 0,
+      offsetY: 0
+    },
+    objects: [{
+      id: 'artwork-1',
+      type: 'svg_path',
+      source: '',
+      transform: {
+        x: 0,
+        y: 0,
+        scale: 100,
+        scaleY: 100,
+        rotation: 0
+      },
+      visible: true,
+      paths: [path],
+      metadata: {
+        formatVersion: 1,
+        artworkKind: 'svg',
+        fileName: 'art.svg',
+        mimeType: 'image/svg+xml',
+        sourceDataUrl: '',
+        rasterSettings: {
+          mode: 'outline',
+          detail: 'draft',
+          threshold: 170,
+          brightness: 0,
+          contrast: 100,
+          blurRadius: 0,
+          adaptiveThreshold: false,
+          smoothingTolerance: 0,
+          invertRaster: false
+        },
+        actionSpeeds: {
+          travelSpeed: 3000,
+          drawingSpeed: 2000,
+          penSpeed: 1000
+        }
+      }
+    }],
+    savedAt: '2026-06-01T10:00:00.000Z'
+  };
+
+  it('recognizes saved project data by JSON contents, independent of imported filename', () => {
+    expect(isSavedProjectData(savedProject)).toBe(true);
+    expect(isSavedProjectData({ ...savedProject, name: 'renamed-file-is-not-used' })).toBe(true);
+    expect(isSavedProjectData({ ...savedProject, savedAt: '' })).toBe(false);
+  });
+
+  it('rejects invalid units and empty artwork lists in saved project data', () => {
+    expect(isSavedProjectData({ ...savedProject, units: 'inches' })).toBe(false);
+    expect(isSavedProjectData({ ...savedProject, objects: [] })).toBe(false);
+  });
+
+  it('updates savedAt to the current save timestamp', () => {
+    const saved = withSavedAtNow(savedProject, new Date('2026-06-10T14:15:16.000Z'));
+
+    expect(saved.savedAt).toBe('2026-06-10T14:15:16.000Z');
+    expect(saved.created).toBe(savedProject.created);
+    expect(saved.name).toBe(savedProject.name);
+  });
+
   it('infers image MIME types from extensions when the browser file type is empty', () => {
     expect(inferImageMimeType({ name: 'fathers-day-card.png', type: '' })).toBe('image/png');
     expect(inferImageMimeType({ name: 'portrait.JPEG', type: '' })).toBe('image/jpeg');
