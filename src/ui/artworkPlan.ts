@@ -62,6 +62,35 @@ export interface SavedProjectData {
   savedAt: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function isSavedProjectData(value: unknown): value is SavedProjectData {
+  if (!isRecord(value)) return false;
+
+  const stringFields = ['id', 'name', 'created', 'machineProfileId', 'units', 'savedAt'];
+  if (!stringFields.every((field) => typeof value[field] === 'string' && value[field] !== '')) {
+    return false;
+  }
+
+  const projectCanvas = value.canvas;
+  if (!isRecord(projectCanvas)) return false;
+  const canvasFields = ['width', 'height', 'offsetX', 'offsetY'];
+  if (!canvasFields.every((field) => typeof projectCanvas[field] === 'number')) {
+    return false;
+  }
+
+  return Array.isArray(value.objects);
+}
+
+export function withSavedAtNow(project: SavedProjectData, now: Date = new Date()): SavedProjectData {
+  return {
+    ...project,
+    savedAt: now.toISOString()
+  };
+}
+
 export function inferImageMimeType(file: FileLike): string {
   const explicitType = file.type.toLowerCase();
   if (explicitType.startsWith('image/')) return explicitType;

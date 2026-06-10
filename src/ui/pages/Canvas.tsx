@@ -31,7 +31,9 @@ import {
   SavedProjectData,
   applyArtworkTransform,
   inferImageMimeType,
-  isPhotoshopSignature
+  isPhotoshopSignature,
+  isSavedProjectData,
+  withSavedAtNow
 } from '../artworkPlan';
 import ta4Profile from '../../../profiles/ta4.json';
 import { PreparedJob } from '../App';
@@ -756,7 +758,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     const name = jobNameRef.current || sourceFileName || 'Untitled artwork';
     if (!paths || !sourceDataUrl) return null;
 
-    return {
+    return withSavedAtNow({
       id: projectId,
       name,
       created: projectCreated,
@@ -802,8 +804,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           }
         }
       }],
-      savedAt: new Date().toISOString()
-    };
+      savedAt: ''
+    });
   };
 
   const handleSaveProject = async () => {
@@ -832,71 +834,86 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       : 'Saved plan to your Downloads folder.');
   };
 
+  const applyLoadedProject = (project: SavedProjectData, importedFileName: string) => {
+    const object = project.objects?.[0];
+    if (!object || !Array.isArray(object.paths) || object.paths.length === 0) {
+      throw new Error('Plan file does not contain drawable artwork.');
+    }
+
+    const metadata = object.metadata;
+    setProjectId(project.id || `project-${Date.now()}`);
+    setProjectCreated(project.created || new Date().toISOString());
+    setRawPaths(object.paths);
+    setOffsetX(Number(object.transform?.x ?? 0));
+    setOffsetY(Number(object.transform?.y ?? 0));
+    setImageScaleX(Number(object.transform?.scale ?? 100));
+    setImageScaleY(Number(object.transform?.scaleY ?? object.transform?.scale ?? 100));
+    setRotation(Number(object.transform?.rotation ?? 0));
+    setFlipX(Boolean(object.transform?.flipX));
+    setFlipY(Boolean(object.transform?.flipY));
+    setArtworkKind(metadata?.artworkKind ?? (object.type === 'raster_image' ? 'raster' : 'svg'));
+    setSourceFileName(metadata?.fileName ?? project.name);
+    setSourceMimeType(metadata?.mimeType ?? '');
+    setSourceDataUrl(metadata?.sourceDataUrl ?? object.source ?? '');
+    rasterSourceFileRef.current = null;
+
+    if (metadata?.rasterSettings) {
+      setRasterMode(metadata.rasterSettings.mode);
+      setRasterDetail(metadata.rasterSettings.detail);
+      setThreshold(metadata.rasterSettings.threshold);
+      setBrightness(metadata.rasterSettings.brightness);
+      setContrast(metadata.rasterSettings.contrast);
+      setBlurRadius(metadata.rasterSettings.blurRadius);
+      setAdaptiveThreshold(metadata.rasterSettings.adaptiveThreshold);
+      setSmoothingTolerance(metadata.rasterSettings.smoothingTolerance);
+      setInvertRaster(metadata.rasterSettings.invertRaster);
+    }
+
+    if (metadata?.actionSpeeds) {
+      setTravelSpeed(metadata.actionSpeeds.travelSpeed);
+      setDrawingSpeed(metadata.actionSpeeds.drawingSpeed);
+      setPenSpeed(metadata.actionSpeeds.penSpeed);
+    }
+
+    const bounds = computeAllBounds(object.paths);
+    console.info('[Artwork] loaded plan', {
+      name: project.name,
+      importedFileName,
+      paths: object.paths.length,
+      transform: object.transform
+    });
+    regenerateJob(
+      object.paths,
+      project.name || metadata?.fileName || 'Untitled artwork',
+      (bounds.minX + bounds.maxX) / 2,
+      (bounds.minY + bounds.maxY) / 2,
+      Number(object.transform?.scale ?? 100),
+      Number(object.transform?.scaleY ?? object.transform?.scale ?? 100),
+      Number(object.transform?.x ?? 0),
+      Number(object.transform?.y ?? 0),
+      Number(object.transform?.rotation ?? 0),
+      Boolean(object.transform?.flipX),
+      Boolean(object.transform?.flipY)
+    );
+  };
+
+  const parseSavedProjectFile = async (file: File): Promise<SavedProjectData | null> => {
+    try {
+      const parsed = JSON.parse(await file.text());
+      return isSavedProjectData(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+
   const handleLoadProject = async (file: File | undefined) => {
     if (!file) return;
     setError(null);
 
     try {
-      const project = JSON.parse(await file.text()) as SavedProjectData & { filePath?: string };
-      const object = project.objects?.[0];
-      if (!object || !Array.isArray(object.paths) || object.paths.length === 0) {
-        throw new Error('Plan file does not contain drawable artwork.');
-      }
-
-      const metadata = object.metadata;
-      setProjectId(project.id || `project-${Date.now()}`);
-      setProjectCreated(project.created || new Date().toISOString());
-      setRawPaths(object.paths);
-      setOffsetX(Number(object.transform?.x ?? 0));
-      setOffsetY(Number(object.transform?.y ?? 0));
-      setImageScaleX(Number(object.transform?.scale ?? 100));
-      setImageScaleY(Number(object.transform?.scaleY ?? object.transform?.scale ?? 100));
-      setRotation(Number(object.transform?.rotation ?? 0));
-      setFlipX(Boolean(object.transform?.flipX));
-      setFlipY(Boolean(object.transform?.flipY));
-      setArtworkKind(metadata?.artworkKind ?? (object.type === 'raster_image' ? 'raster' : 'svg'));
-      setSourceFileName(metadata?.fileName ?? project.name ?? file.name);
-      setSourceMimeType(metadata?.mimeType ?? '');
-      setSourceDataUrl(metadata?.sourceDataUrl ?? object.source ?? '');
-      rasterSourceFileRef.current = null;
-
-      if (metadata?.rasterSettings) {
-        setRasterMode(metadata.rasterSettings.mode);
-        setRasterDetail(metadata.rasterSettings.detail);
-        setThreshold(metadata.rasterSettings.threshold);
-        setBrightness(metadata.rasterSettings.brightness);
-        setContrast(metadata.rasterSettings.contrast);
-        setBlurRadius(metadata.rasterSettings.blurRadius);
-        setAdaptiveThreshold(metadata.rasterSettings.adaptiveThreshold);
-        setSmoothingTolerance(metadata.rasterSettings.smoothingTolerance);
-        setInvertRaster(metadata.rasterSettings.invertRaster);
-      }
-
-      if (metadata?.actionSpeeds) {
-        setTravelSpeed(metadata.actionSpeeds.travelSpeed);
-        setDrawingSpeed(metadata.actionSpeeds.drawingSpeed);
-        setPenSpeed(metadata.actionSpeeds.penSpeed);
-      }
-
-      const bounds = computeAllBounds(object.paths);
-      console.info('[Artwork] loaded plan', {
-        name: project.name || file.name,
-        paths: object.paths.length,
-        transform: object.transform
-      });
-      regenerateJob(
-        object.paths,
-        project.name || metadata?.fileName || file.name,
-        (bounds.minX + bounds.maxX) / 2,
-        (bounds.minY + bounds.maxY) / 2,
-        Number(object.transform?.scale ?? 100),
-        Number(object.transform?.scaleY ?? object.transform?.scale ?? 100),
-        Number(object.transform?.x ?? 0),
-        Number(object.transform?.y ?? 0),
-        Number(object.transform?.rotation ?? 0),
-        Boolean(object.transform?.flipX),
-        Boolean(object.transform?.flipY)
-      );
+      const project = await parseSavedProjectFile(file);
+      if (!project) throw new Error('Plan file must contain a saved Bachin Open Controller project.');
+      applyLoadedProject(project, file.name);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
       setMessage('Plan load failed.');
@@ -911,14 +928,33 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const handleOpenFile = async (file: File | undefined) => {
     if (!file) return;
     const startedAt = performance.now();
+    const savedProject = await parseSavedProjectFile(file);
     console.info('[Artwork] open file', {
       name: file.name,
       type: file.type || '(empty)',
       size: file.size,
-      route: shouldLoadAsProject(file) ? 'plan' : 'artwork'
+      route: savedProject || shouldLoadAsProject(file) ? 'plan' : 'artwork'
     });
+
+    if (savedProject) {
+      setError(null);
+      try {
+        applyLoadedProject(savedProject, file.name);
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : String(caught));
+        setMessage('Plan load failed.');
+      }
+      console.info('[Artwork] open complete', {
+        name: file.name,
+        route: 'plan',
+        durationMs: Math.round(performance.now() - startedAt)
+      });
+      return;
+    }
+
     if (shouldLoadAsProject(file)) {
-      await handleLoadProject(file);
+      setError('Plan file must contain a saved Bachin Open Controller project.');
+      setMessage('Plan load failed.');
       console.info('[Artwork] open complete', {
         name: file.name,
         route: 'plan',

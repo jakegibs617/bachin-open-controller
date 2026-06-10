@@ -1,11 +1,44 @@
 import {
   applyArtworkTransform,
   inferImageMimeType,
-  isPhotoshopSignature
+  isPhotoshopSignature,
+  isSavedProjectData,
+  SavedProjectData,
+  withSavedAtNow
 } from '../src/ui/artworkPlan';
 import { Path } from '../src/types';
 
 describe('Artwork plan helpers', () => {
+  const savedProject: SavedProjectData = {
+    id: 'project-1',
+    name: 'Original project name',
+    created: '2026-06-01T10:00:00.000Z',
+    machineProfileId: 'ta4',
+    units: 'cm',
+    canvas: {
+      width: 190,
+      height: 280,
+      offsetX: 0,
+      offsetY: 0
+    },
+    objects: [],
+    savedAt: '2026-06-01T10:00:00.000Z'
+  };
+
+  it('recognizes saved project data by JSON contents, independent of imported filename', () => {
+    expect(isSavedProjectData(savedProject)).toBe(true);
+    expect(isSavedProjectData({ ...savedProject, name: 'renamed-file-is-not-used' })).toBe(true);
+    expect(isSavedProjectData({ ...savedProject, savedAt: '' })).toBe(false);
+  });
+
+  it('updates savedAt to the current save timestamp', () => {
+    const saved = withSavedAtNow(savedProject, new Date('2026-06-10T14:15:16.000Z'));
+
+    expect(saved.savedAt).toBe('2026-06-10T14:15:16.000Z');
+    expect(saved.created).toBe(savedProject.created);
+    expect(saved.name).toBe(savedProject.name);
+  });
+
   it('infers image MIME types from extensions when the browser file type is empty', () => {
     expect(inferImageMimeType({ name: 'fathers-day-card.png', type: '' })).toBe('image/png');
     expect(inferImageMimeType({ name: 'portrait.JPEG', type: '' })).toBe('image/jpeg');
