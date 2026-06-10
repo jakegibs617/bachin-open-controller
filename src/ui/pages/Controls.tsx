@@ -135,7 +135,12 @@ export const Controls: React.FC<ControlsProps> = ({
       if (!result.ok) { setError(result.error); return; }
       const nextPorts = result.data ?? [];
       setPorts(nextPorts);
-      setSelectedPort((current) => current || nextPorts[0]?.path || '');
+      setSelectedPort((current) => {
+        if (current && nextPorts.some((port) => port.path === current)) {
+          return current;
+        }
+        return nextPorts[0]?.path || '';
+      });
       setMessage(nextPorts.length > 0 ? 'Select a port, then connect.' : 'No serial ports found.');
     } finally {
       setBusy(false);
@@ -147,6 +152,11 @@ export const Controls: React.FC<ControlsProps> = ({
   }, [apiAvailable, refreshPorts]);
 
   const connect = async () => {
+    if (!selectedPort) {
+      setError('Select a serial port before connecting.');
+      return;
+    }
+
     const ok = await runAction(
       () => window.api!.serial.connect(selectedPort, baudRate),
       `Connected to ${selectedPort}.`

@@ -48,6 +48,19 @@ npm run dev
 
 That's it. Running via `npm run dev` launches Electron through Node.js, so Windows Smart App Control does not apply — no code signing needed for local development.
 
+### macOS Local Launcher
+
+To create a clickable local launcher on macOS, build it from the AppleScript
+source:
+
+```bash
+./scripts/build-mac-app.sh
+open BachinApp.app
+```
+
+`BachinApp.app/` is generated locally and ignored by Git. Rebuild it whenever
+`scripts/launch-local-mac.applescript` changes.
+
 ## Current Status
 
 TA4-focused MVP prototype. The project has a working Electron shell,

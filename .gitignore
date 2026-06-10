@@ -10,6 +10,7 @@ Desktop.ini
 dist/
 build/
 out/
+BachinApp.app/
 node_modules/
 target/
 __pycache__/

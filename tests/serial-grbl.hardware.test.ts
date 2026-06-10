@@ -14,6 +14,7 @@ describeHardware('GRBLController hardware', () => {
     await controller.openPort(hardwarePort as string, Number(process.env.GRBL_HARDWARE_BAUD ?? 115200));
 
     try {
+      await controller.wakeAfterReset();
       const status = await controller.queryStatus();
       expect(status.state).toMatch(/idle|run|hold|jog|alarm|door|check|home|sleep/);
       expect(Number.isFinite(status.position.x)).toBe(true);
