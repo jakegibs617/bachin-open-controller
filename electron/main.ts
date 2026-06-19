@@ -15,7 +15,7 @@
  * - Error logging and recovery
  */
 
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, powerSaveBlocker } from 'electron';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { GRBLController, listSerialPorts } from '../src/core/serial-grbl';
@@ -27,6 +27,7 @@ import { MachineProfile, Project } from '../src/types';
 
 let mainWindow: BrowserWindow | null = null;
 let grblController: GRBLController | undefined;
+let sleepBlockerId: number | null = null;
 const machineProfile = ta4Profile as MachineProfile;
 const holdCurrentCommand = '$1=255';
 const idleReleaseCommand = '$1=250';
@@ -240,6 +241,30 @@ function createWindow() {
   }
 }
 
+function blockSystemSleep(): void {
+  if (sleepBlockerId === null || !powerSaveBlocker.isStarted(sleepBlockerId)) {
+    sleepBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+  }
+}
+
+function releaseSystemSleep(): void {
+  if (sleepBlockerId !== null && powerSaveBlocker.isStarted(sleepBlockerId)) {
+    powerSaveBlocker.stop(sleepBlockerId);
+  }
+  sleepBlockerId = null;
+}
+
+async function streamJobWhileAwake(controller: GRBLController, gcode: string[]): Promise<void> {
+  blockSystemSleep();
+  try {
+    await controller.streamJob(gcode, (sent, total) => {
+      sendMainWindowProgress(sent, total);
+    }, { waitForIdle: true });
+  } finally {
+    releaseSystemSleep();
+  }
+}
+
 function sendMainWindowProgress(sent: number, total: number): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
@@ -293,9 +318,7 @@ ipcMain.handle('serial:sendJob', async (_event, gcode: string[]) => {
     const controller = requireController();
     validateGCodeJob(gcode, machineProfile);
 
-    await controller.streamJob(gcode, (sent, total) => {
-      sendMainWindowProgress(sent, total);
-    }, { waitForIdle: true });
+    await streamJobWhileAwake(controller, gcode);
   });
 });
 
@@ -306,9 +329,7 @@ ipcMain.handle('serial:perimeterTest', async (_event, width?: number, height?: n
     const h = resolvePerimeterDimension(height, machineProfile.workArea.y, machineProfile.workArea.y, 'Perimeter height');
     const gcode = generatePerimeterGCode(w, h, machineProfile);
     validateGCodeJob(gcode, machineProfile);
-    await controller.streamJob(gcode, (sent, total) => {
-      sendMainWindowProgress(sent, total);
-    }, { waitForIdle: true });
+    await streamJobWhileAwake(controller, gcode);
   });
 });
 

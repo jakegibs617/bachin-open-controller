@@ -48,6 +48,7 @@ export interface SavedCanvasObject {
     flipY?: boolean;
   };
   visible: boolean;
+  previewColor?: string;
   paths: Path[];
   metadata: SavedArtworkMetadata;
 }
@@ -60,6 +61,7 @@ export interface SavedProjectData {
   units: LengthUnit;
   canvas: CanvasModel;
   objects: SavedCanvasObject[];
+  activeObjectId?: string;
   savedAt: string;
 }
 
