@@ -104,9 +104,12 @@ export const Controls: React.FC<ControlsProps> = ({
 
   const apiAvailable = Boolean(window.api?.serial);
   const jobHasOutOfBoundsWarning = hasOutOfBoundsWarning(preparedJob);
-  const jobRunDisabledReason = jobHasOutOfBoundsWarning
-    ? 'Cannot run artwork job: generated coordinates exceed the machine work area. Adjust placement, scale, or rotation before running hardware.'
-    : busy ? 'Wait for the current command to finish.' : '';
+  const jobRunBlockedReason = preparedJob?.runBlockedReason ?? '';
+  const jobRunDisabledReason = jobRunBlockedReason
+    ? jobRunBlockedReason
+    : jobHasOutOfBoundsWarning
+      ? 'Cannot run artwork job: generated coordinates exceed the machine work area. Adjust placement, scale, or rotation before running hardware.'
+      : busy ? 'Wait for the current command to finish.' : '';
   const unitLabel = UNIT_LABELS[units];
 
   const runAction = async (action: () => Promise<IpcResult>, successMessage: string): Promise<boolean> => {
@@ -221,6 +224,7 @@ export const Controls: React.FC<ControlsProps> = ({
 
   const runPreparedJob = async () => {
     if (!preparedJob) { setError('No generated job is ready.'); return; }
+    if (preparedJob.runBlockedReason) { setError(preparedJob.runBlockedReason); return; }
     if (hasOutOfBoundsWarning(preparedJob)) {
       setError('Cannot run artwork job: generated coordinates exceed the machine work area.');
       return;
@@ -413,7 +417,7 @@ export const Controls: React.FC<ControlsProps> = ({
                   <button
                     type="button"
                     className="btn-primary"
-                    disabled={busy || jobHasOutOfBoundsWarning}
+                    disabled={busy || jobHasOutOfBoundsWarning || Boolean(jobRunBlockedReason)}
                     onClick={runPreparedJob}
                   >
                     Run Artwork Job
