@@ -361,6 +361,26 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const [lockAspectRatio, setLockAspectRatio] = React.useState(true);
   const [magnifierActive, setMagnifierActive] = React.useState(false);
   const [magnifierPos, setMagnifierPos] = React.useState<{ x: number; y: number } | null>(null);
+  // Coalesce magnifier updates to one per animation frame so a fast pointer
+  // doesn't trigger a scene re-render on every mousemove event.
+  const magnifierRafRef = React.useRef<number | null>(null);
+  const magnifierPtRef = React.useRef<{ x: number; y: number } | null>(null);
+  const scheduleMagnifier = (pt: { x: number; y: number }) => {
+    magnifierPtRef.current = pt;
+    if (magnifierRafRef.current !== null) return;
+    magnifierRafRef.current = requestAnimationFrame(() => {
+      magnifierRafRef.current = null;
+      if (magnifierPtRef.current) setMagnifierPos(magnifierPtRef.current);
+    });
+  };
+  const clearMagnifierPos = () => {
+    if (magnifierRafRef.current !== null) {
+      cancelAnimationFrame(magnifierRafRef.current);
+      magnifierRafRef.current = null;
+    }
+    magnifierPtRef.current = null;
+    setMagnifierPos(null);
+  };
   const [isDragging, setIsDragging] = React.useState(false);
   const [, _setLayers] = React.useState<ArtworkLayer[]>([]);
   const layersRef = React.useRef<ArtworkLayer[]>([]);
@@ -414,6 +434,10 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   // identity so "Save plan" writes back only the active layer's plan.
   const plansRef = React.useRef<Map<string, PlanInfo>>(new Map());
   const planSeqRef = React.useRef(0);
+  const artworkSeqRef = React.useRef(0);
+  // Date.now keeps ids readable/sortable; the counter guarantees uniqueness for
+  // imports that land in the same millisecond.
+  const newArtworkId = () => `artwork-${Date.now()}-${++artworkSeqRef.current}`;
   const registerPlan = (info: PlanInfo): string => {
     const key = `plan-${++planSeqRef.current}`;
     plansRef.current.set(key, info);
@@ -826,7 +850,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   };
 
   const handleSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (magnifierActive) setMagnifierPos(getSvgPt(e));
+    if (magnifierActive) scheduleMagnifier(getSvgPt(e));
 
     const state = dragState.current;
     if (!state) return;
@@ -891,23 +915,32 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const handleDimensionChange = (axis: 'width' | 'height', valueMm: number) => {
     if (!rawBounds || !Number.isFinite(valueMm) || valueMm <= 0) return;
     const clamp = (scale: number) => Math.max(5, Math.min(500, scale));
-    if (axis === 'width' && rawWidth > 0) {
-      const nextScaleX = clamp((valueMm / rawWidth) * 100);
-      // When the aspect ratio is locked, scale the other axis by the same
-      // factor so the image keeps its current proportions.
-      const factor = nextScaleX / imageScaleXRef.current;
-      const nextScaleY = lockAspectRatio ? clamp(imageScaleYRef.current * factor) : imageScaleYRef.current;
-      setImageScaleX(nextScaleX);
-      if (lockAspectRatio) setImageScaleY(nextScaleY);
-      applyTransformAndRegenerate(nextScaleX, nextScaleY, offsetXRef.current, offsetYRef.current, rotationRef.current);
-    } else if (axis === 'height' && rawHeight > 0) {
-      const nextScaleY = clamp((valueMm / rawHeight) * 100);
-      const factor = nextScaleY / imageScaleYRef.current;
-      const nextScaleX = lockAspectRatio ? clamp(imageScaleXRef.current * factor) : imageScaleXRef.current;
-      setImageScaleY(nextScaleY);
-      if (lockAspectRatio) setImageScaleX(nextScaleX);
-      applyTransformAndRegenerate(nextScaleX, nextScaleY, offsetXRef.current, offsetYRef.current, rotationRef.current);
+    const raw = axis === 'width' ? rawWidth : rawHeight;
+    if (raw <= 0) return;
+
+    const currentScale = axis === 'width' ? imageScaleXRef.current : imageScaleYRef.current;
+    const targetScale = (valueMm / raw) * 100;
+
+    let nextScaleX: number;
+    let nextScaleY: number;
+    if (lockAspectRatio) {
+      // Scale both axes by a single factor so the ratio is preserved, but clamp
+      // the factor itself so neither axis can leave the [5, 500] range — clamping
+      // the axes independently would distort the image at the boundary.
+      const desiredFactor = targetScale / currentScale;
+      const minFactor = Math.max(5 / imageScaleXRef.current, 5 / imageScaleYRef.current);
+      const maxFactor = Math.min(500 / imageScaleXRef.current, 500 / imageScaleYRef.current);
+      const factor = Math.min(maxFactor, Math.max(minFactor, desiredFactor));
+      nextScaleX = imageScaleXRef.current * factor;
+      nextScaleY = imageScaleYRef.current * factor;
+    } else {
+      nextScaleX = axis === 'width' ? clamp(targetScale) : imageScaleXRef.current;
+      nextScaleY = axis === 'width' ? imageScaleYRef.current : clamp(targetScale);
     }
+
+    setImageScaleX(nextScaleX);
+    setImageScaleY(nextScaleY);
+    applyTransformAndRegenerate(nextScaleX, nextScaleY, offsetXRef.current, offsetYRef.current, rotationRef.current);
   };
 
   const handleRotationChange = (newRotation: number) => {
@@ -1356,7 +1389,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       const activePlanKey = activeLayerIdRef.current
         ? layersRef.current.find((layer) => layer.id === activeLayerIdRef.current)?.planKey
         : undefined;
-      const id = `artwork-${Date.now()}`;
+      const id = newArtworkId();
       const nextLayer: ArtworkLayer = {
         id,
         planKey: activePlanKey ?? newPlanKey(),
@@ -1684,7 +1717,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           title="Magnifier — hover the artwork to see a zoomed view"
           onClick={() => {
             setMagnifierActive((active) => !active);
-            setMagnifierPos(null);
+            clearMagnifierPos();
           }}
         >
           🔍 Magnify
@@ -1875,7 +1908,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           style={{ userSelect: 'none', display: 'block', width: '100%', height: '100%', cursor: magnifierActive ? 'crosshair' : undefined }}
           onPointerMove={handleSvgPointerMove}
           onPointerUp={handleSvgPointerUp}
-          onPointerLeave={() => setMagnifierPos(null)}
+          onPointerLeave={clearMagnifierPos}
         >
           {renderPreviewScene('main', true)}
 
