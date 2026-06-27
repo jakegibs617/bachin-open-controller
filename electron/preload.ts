@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('api', {
     disconnect: () => ipcRenderer.invoke('serial:disconnect'),
     sendJob: (gcode: string[]) => ipcRenderer.invoke('serial:sendJob', gcode),
     perimeterTest: (width: number, height: number) => ipcRenderer.invoke('serial:perimeterTest', width, height),
+    speedTest: (speeds: number[], boundaryMm?: number, turns?: number) =>
+      ipcRenderer.invoke('serial:speedTest', speeds, boundaryMm, turns),
     penDown: () => ipcRenderer.invoke('serial:penDown'),
     penUp: () => ipcRenderer.invoke('serial:penUp'),
     returnToOrigin: () => ipcRenderer.invoke('serial:returnToOrigin'),

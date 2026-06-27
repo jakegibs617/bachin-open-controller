@@ -17,6 +17,14 @@
 
 import { Path, MachineProfile, Canvas, JobWarning } from '../../types';
 export { validateGCodeJob, validateGCodeLine } from './validation';
+export {
+  generateSpeedTestGCode,
+  TWO_INCH_MM,
+  MIN_TEST_SPEED,
+  DEFAULT_SPEED_TEST_BOUNDARY_MM,
+  DEFAULT_SPEED_TEST_TURNS
+} from './speedTest';
+export type { SpeedTestOptions, SpeedTestPlan } from './speedTest';
 
 function formatCoordinate(value: number): string {
   return Number(value.toFixed(3)).toString();
