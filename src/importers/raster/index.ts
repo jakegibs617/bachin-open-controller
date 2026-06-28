@@ -2,7 +2,7 @@ import { Path } from '../../types';
 
 export interface RasterTraceOptions {
   threshold?: number;
-  mode?: 'outline' | 'fill' | 'centerline' | 'dither';
+  mode?: 'outline' | 'fill' | 'centerline' | 'dither' | 'contour-fill';
   xStep?: number;
   yStep?: number;
   minRunLength?: number;
@@ -43,6 +43,9 @@ export function traceRasterToPaths(
   }
   if (options.mode === 'dither') {
     return traceRasterFill(binary, width, height, options);
+  }
+  if (options.mode === 'contour-fill') {
+    return traceRasterContourFill(binary, width, height, options);
   }
 
   return traceRasterOutline(binary, width, height, options);
@@ -123,6 +126,129 @@ function traceRasterOutline(
       }
       if (!isDarkAt(binary, width, height, x - 1, y)) {
         paths.push(edgePath(paths.length + 1, x, y + 1, x, y, width, height, fit));
+      }
+    }
+  }
+
+  return paths;
+}
+
+// Finds each connected dark region, outlines it fully, then fills it with horizontal
+// scan lines before moving on to the next region. Designed for type/letterforms where
+// each glyph should be completed (outline + fill) before the pen travels to the next.
+function traceRasterContourFill(
+  binary: Uint8Array,
+  width: number,
+  height: number,
+  options: RasterTraceOptions
+): Path[] {
+  const xStep = Math.max(1, Math.floor(options.xStep ?? 1));
+  const yStep = Math.max(1, Math.floor(options.yStep ?? 2));
+  const minRunLength = Math.max(1, Math.floor(options.minRunLength ?? 2));
+  const fit = computeFit(width, height, options.canvasWidth, options.canvasHeight);
+
+  // BFS connected-component labeling (4-connectivity)
+  const labels = new Int32Array(width * height).fill(-1);
+  const componentBounds: Array<{ minX: number; minY: number; maxX: number; maxY: number }> = [];
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      if (binary[i] !== 1 || labels[i] !== -1) continue;
+
+      const label = componentBounds.length;
+      let minX = x, minY = y, maxX = x, maxY = y;
+      const queue: number[] = [i];
+      labels[i] = label;
+
+      while (queue.length > 0) {
+        const idx = queue.pop()!;
+        const cx = idx % width;
+        const cy = (idx / width) | 0;
+        if (cx < minX) minX = cx;
+        if (cx > maxX) maxX = cx;
+        if (cy < minY) minY = cy;
+        if (cy > maxY) maxY = cy;
+
+        const up = cy > 0 ? idx - width : -1;
+        const dn = cy < height - 1 ? idx + width : -1;
+        const lt = cx > 0 ? idx - 1 : -1;
+        const rt = cx < width - 1 ? idx + 1 : -1;
+        for (const n of [up, dn, lt, rt]) {
+          if (n !== -1 && binary[n] === 1 && labels[n] === -1) {
+            labels[n] = label;
+            queue.push(n);
+          }
+        }
+      }
+
+      componentBounds.push({ minX, minY, maxX, maxY });
+    }
+  }
+
+  // Sort components reading-order: top-to-bottom then left-to-right
+  const order = componentBounds
+    .map((b, label) => ({ label, b }))
+    .sort((a, b) => a.b.minY !== b.b.minY ? a.b.minY - b.b.minY : a.b.minX - b.b.minX)
+    .map(({ label }) => label);
+
+  const paths: Path[] = [];
+
+  for (const label of order) {
+    const { minX, minY, maxX, maxY } = componentBounds[label];
+
+    // Outline: emit a pixel-edge segment for every face that borders a non-component cell
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        if (labels[y * width + x] !== label) continue;
+
+        if (y === 0 || labels[(y - 1) * width + x] !== label) {
+          paths.push(edgePath(paths.length + 1, x, y, x + 1, y, width, height, fit));
+        }
+        if (x === width - 1 || labels[y * width + x + 1] !== label) {
+          paths.push(edgePath(paths.length + 1, x + 1, y, x + 1, y + 1, width, height, fit));
+        }
+        if (y === height - 1 || labels[(y + 1) * width + x] !== label) {
+          paths.push(edgePath(paths.length + 1, x + 1, y + 1, x, y + 1, width, height, fit));
+        }
+        if (x === 0 || labels[y * width + x - 1] !== label) {
+          paths.push(edgePath(paths.length + 1, x, y + 1, x, y, width, height, fit));
+        }
+      }
+    }
+
+    // Fill: horizontal scan lines clipped to this component
+    for (let y = minY; y <= maxY; y += yStep) {
+      let runStart: number | null = null;
+
+      for (let x = minX; x <= maxX + xStep; x += xStep) {
+        const inComp = x <= maxX && labels[y * width + x] === label;
+
+        if (inComp && runStart === null) {
+          runStart = x;
+        }
+
+        if (!inComp && runStart !== null) {
+          const runEnd = x - xStep;
+          if (runEnd - runStart + xStep >= minRunLength) {
+            const start = toCanvasPoint(runStart, y, width, height, fit);
+            const end = toCanvasPoint(runEnd, y, width, height, fit);
+            paths.push({
+              id: `raster-contour-fill-${paths.length + 1}`,
+              segments: [
+                { ...start, penDown: false },
+                { ...end, penDown: true }
+              ],
+              bounds: {
+                minX: Math.min(start.x, end.x),
+                maxX: Math.max(start.x, end.x),
+                minY: start.y,
+                maxY: start.y
+              }
+            });
+          }
+          runStart = null;
+        }
       }
     }
   }

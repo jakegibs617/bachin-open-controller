@@ -2,7 +2,7 @@ import { isRecord } from '../core/typeGuards';
 import { Canvas as CanvasModel, LengthUnit, Path } from '../types';
 
 export type ArtworkKind = 'svg' | 'raster';
-export type RasterMode = 'outline' | 'fill' | 'centerline' | 'dither';
+export type RasterMode = 'outline' | 'fill' | 'centerline' | 'dither' | 'contour-fill';
 export type RasterDetail = 'draft' | 'normal' | 'fine' | 'ultra' | 'max';
 
 export interface FileLike {
