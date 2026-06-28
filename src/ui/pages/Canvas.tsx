@@ -117,6 +117,7 @@ const RASTER_MODE_HINTS: Record<RasterMode, string> = {
   fill: 'Fills dark regions with horizontal scan lines. Good for solid shapes that need a hatched shading effect.',
   centerline: 'Finds the skeleton midline of strokes. Ideal for handwriting, technical drawings, and thin lines.',
   dither: 'Converts gray tones to dot patterns using ordered dithering. Best for photos and continuous-tone images.',
+  'contour-fill': 'Outlines each connected region fully, then fills it with horizontal lines before moving on. Ideal for type and letterforms.',
 };
 
 const RASTER_TRACE_SIZES: Record<RasterDetail, number> = {
@@ -1784,6 +1785,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           <option value="fill">Fill lines</option>
           <option value="centerline">Centerline</option>
           <option value="dither">Dither</option>
+          <option value="contour-fill">Contour fill</option>
         </select>
         <label htmlFor="raster-detail">Detail</label>
         <select
