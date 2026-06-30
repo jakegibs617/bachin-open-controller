@@ -5,7 +5,7 @@ function rgba(pixels: Array<[number, number, number, number]>): Uint8ClampedArra
 }
 
 describe('Raster tracing', () => {
-  it('turns dark horizontal pixel runs into pen strokes', () => {
+  it('collapses connected fill pixels into the fewest candidate stroke', () => {
     const data = rgba([
       [255, 255, 255, 255], [0, 0, 0, 255], [0, 0, 0, 255], [255, 255, 255, 255],
       [255, 255, 255, 255], [255, 255, 255, 255], [0, 0, 0, 255], [0, 0, 0, 255]
@@ -20,12 +20,53 @@ describe('Raster tracing', () => {
       minRunLength: 2
     });
 
-    expect(paths).toHaveLength(2);
+    expect(paths).toHaveLength(1);
     expect(paths[0].segments[0].x).toBeCloseTo(13.333);
     expect(paths[0].segments[0]).toMatchObject({ y: 0, penDown: false });
-    expect(paths[0].segments[1].x).toBeCloseTo(26.667);
-    expect(paths[0].segments[1]).toMatchObject({ y: 0, penDown: true });
-    expect(paths[1].segments[0].y).toBeCloseTo(20);
+    expect(paths[0].segments[1].x).toBeCloseTo(40);
+    expect(paths[0].segments[1]).toMatchObject({ y: 20, penDown: true });
+  });
+
+  it('chooses vertical fill strokes when they use fewer lines', () => {
+    const data = rgba([
+      [255, 255, 255, 255], [0, 0, 0, 255], [255, 255, 255, 255],
+      [255, 255, 255, 255], [0, 0, 0, 255], [255, 255, 255, 255],
+      [255, 255, 255, 255], [0, 0, 0, 255], [255, 255, 255, 255]
+    ]);
+
+    const paths = traceRasterToPaths(data, 3, 3, {
+      canvasWidth: 30,
+      canvasHeight: 30,
+      mode: 'fill',
+      threshold: 128,
+      yStep: 1,
+      minRunLength: 2
+    });
+
+    expect(paths).toHaveLength(1);
+    expect(paths[0].segments[0]).toMatchObject({ x: 15, y: 0, penDown: false });
+    expect(paths[0].segments[1]).toMatchObject({ x: 15, y: 30, penDown: true });
+  });
+
+  it('uses diagonal fill strokes for diagonal dark regions', () => {
+    const data = rgba([
+      [0, 0, 0, 255], [255, 255, 255, 255], [255, 255, 255, 255],
+      [255, 255, 255, 255], [0, 0, 0, 255], [255, 255, 255, 255],
+      [255, 255, 255, 255], [255, 255, 255, 255], [0, 0, 0, 255]
+    ]);
+
+    const paths = traceRasterToPaths(data, 3, 3, {
+      canvasWidth: 30,
+      canvasHeight: 30,
+      mode: 'fill',
+      threshold: 128,
+      yStep: 1,
+      minRunLength: 2
+    });
+
+    expect(paths).toHaveLength(1);
+    expect(paths[0].segments[0]).toMatchObject({ x: 0, y: 0, penDown: false });
+    expect(paths[0].segments[1]).toMatchObject({ x: 30, y: 30, penDown: true });
   });
 
   it('traces dark pixel outlines by default', () => {
@@ -106,8 +147,53 @@ describe('Raster tracing', () => {
       minRunLength: 1
     });
 
-    expect(adaptive).toHaveLength(global.length);
-    expect(adaptive[0].segments[1].x).toBeGreaterThan(global[0].segments[1].x);
+    expect(adaptive.length).toBeGreaterThan(global.length);
+    expect(adaptive.some(path => path.segments[0].x === 15 || path.segments[1].x === 15)).toBe(true);
+  });
+
+  it('reduces a diagonal centerline to the least straight stroke', () => {
+    const data = rgba([
+      [0, 0, 0, 255], [255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255],
+      [255, 255, 255, 255], [0, 0, 0, 255], [255, 255, 255, 255], [255, 255, 255, 255],
+      [255, 255, 255, 255], [255, 255, 255, 255], [0, 0, 0, 255], [255, 255, 255, 255],
+      [255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255], [0, 0, 0, 255]
+    ]);
+
+    const paths = traceRasterToPaths(data, 4, 4, {
+      canvasWidth: 40,
+      canvasHeight: 40,
+      mode: 'centerline',
+      threshold: 128
+    });
+
+    expect(paths).toHaveLength(1);
+    expect(paths[0].segments).toHaveLength(2);
+    expect(paths[0].segments).toEqual([
+      { x: 0, y: 0, penDown: false },
+      { x: 40, y: 40, penDown: true }
+    ]);
+  });
+
+  it('keeps meaningful bends while simplifying centerlines', () => {
+    const data = rgba([
+      [0, 0, 0, 255], [255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255],
+      [0, 0, 0, 255], [255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255],
+      [0, 0, 0, 255], [0, 0, 0, 255], [0, 0, 0, 255], [0, 0, 0, 255], [0, 0, 0, 255],
+      [255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255],
+      [255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255], [255, 255, 255, 255]
+    ]);
+
+    const paths = traceRasterToPaths(data, 5, 5, {
+      canvasWidth: 40,
+      canvasHeight: 40,
+      mode: 'centerline',
+      threshold: 128
+    });
+
+    expect(paths).toHaveLength(1);
+    expect(paths[0].segments.length).toBeGreaterThan(2);
+    expect(paths[0].segments[0]).toMatchObject({ x: 0, y: 0, penDown: false });
+    expect(paths[0].segments[paths[0].segments.length - 1]).toMatchObject({ x: 40, y: 20, penDown: true });
   });
 
   it('simplifies traced polylines with Douglas-Peucker smoothing', () => {
