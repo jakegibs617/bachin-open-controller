@@ -15,6 +15,17 @@ level summaries and practical details that help future sessions ramp up quickly.
 - `transformLayersTogether()` in `src/ui/artworkPlan.ts`: scales and moves layers
   around the group center (or an anchor) and compensates each layer's offset.
 
+### Added (Claude Code skill)
+
+- `.claude/skills/photoshop-to-bachin/`: a Claude Code skill for taking card art
+  from Photoshop or an image to a print-ready plan. It covers plottability checks, splitting
+  colors with Color Range, full-canvas export, tracing, fitting to a card, and the plotting checklist.
+  Scripts: `check_layers.py` (mismatched layer sizes, renamed PSDs, solid fills,
+  light ink, cross-layer overlap), `fit_plan.py` (scale and place a plan on a
+  4x6/5x7 card in any bed corner, keeping layers aligned), `open_in_controller.cjs`
+  (Playwright preview of a plan, never touches the Machine tab).
+- `.gitignore`: tracks `.claude/skills/`; the rest of `.claude/` stays ignored.
+
 ### Why
 
 - Each layer scales around its own bounds center. Giving two color layers of one
