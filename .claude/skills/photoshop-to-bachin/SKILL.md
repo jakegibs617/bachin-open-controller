@@ -76,6 +76,7 @@ The script is exact, and it works on plans that were already scaled or moved:
 python3 <skill>/scripts/fit_plan.py ~/Downloads/<plan>.boc.json --card 4x6 --corner br
 ```
 - `--card WxH` in inches, portrait (`4x6`, `5x7`). `--corner tl|tr|bl|br` picks the bed corner where the card is taped.
+- `--inset 1` moves the card 1 in away from that corner's two bed edges (e.g. so it's easier to tape down).
 - The art is scaled to fit inside the card (`--fit contain`) and centered on it, with every layer scaled by the same factor.
 - It writes `<plan>-<card>-<corner>.boc.json` next to the input, and prints each layer's X/Y/W in inches.
 - The art may reach the bed's edge (180 mm or 210 mm). If the machine stops short there, use `--margin 0.05`.

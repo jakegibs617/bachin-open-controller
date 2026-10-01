@@ -6,11 +6,11 @@ color layers traced from one image stay lined up. This matches "Layers linked" i
 
 Usage:
   fit_plan.py PLAN.boc.json --card 4x6 [--corner tl|tr|bl|br] [--fit width|height|contain]
-              [--margin 0.0] [--out OUT.boc.json]
+              [--margin 0.0] [--inset 0.0] [--out OUT.boc.json]
 
 Card size is in inches (portrait, width x height). The card is placed in the chosen corner
-of the machine bed (the plan's canvas, e.g. 180 x 210 mm for the TA4), and the art is centered
-on the card. Prints the X/Y/W values to type into the controller for each layer.
+of the machine bed (the plan's canvas, e.g. 180 x 210 mm for the TA4), --inset inches in from
+that corner's two edges, and the art is centered on the card. Prints the X/Y/W values to type into the controller for each layer.
 """
 import argparse
 import json
@@ -37,7 +37,7 @@ def placed_bounds(layer):
     return min(xs), max(xs), min(ys), max(ys), (cx, cy)
 
 
-def fit(plan, card_w_in, card_h_in, corner="tl", mode="contain", margin_in=0.0):
+def fit(plan, card_w_in, card_h_in, corner="tl", mode="contain", margin_in=0.0, inset_in=0.0):
     layers = [o for o in plan["objects"] if o.get("paths")]
     for o in layers:
         t = o["transform"]
@@ -55,10 +55,12 @@ def fit(plan, card_w_in, card_h_in, corner="tl", mode="contain", margin_in=0.0):
     f = {"width": fx, "height": fy}.get(mode, min(fx, fy))
 
     bed_w, bed_h = plan["canvas"]["width"], plan["canvas"]["height"]
-    if card_w > bed_w + 1e-6 or card_h > bed_h + 1e-6:
-        sys.exit(f"Card {card_w_in}x{card_h_in} in doesn't fit the {bed_w / MM:.2f}x{bed_h / MM:.2f} in bed.")
-    card_x = 0 if corner in ("tl", "bl") else bed_w - card_w
-    card_y = 0 if corner in ("tl", "tr") else bed_h - card_h
+    inset = inset_in * MM
+    if card_w + inset > bed_w + 1e-6 or card_h + inset > bed_h + 1e-6:
+        sys.exit(f"Card {card_w_in}x{card_h_in} in with a {inset_in} in inset doesn't fit the "
+                 f"{bed_w / MM:.2f}x{bed_h / MM:.2f} in bed.")
+    card_x = inset if corner in ("tl", "bl") else bed_w - card_w - inset
+    card_y = inset if corner in ("tl", "tr") else bed_h - card_h - inset
 
     # New group bounds: scaled art centered on the card.
     new_w, new_h = art_w * f, art_h * f
@@ -98,12 +100,13 @@ def main():
     ap.add_argument("--corner", default="tl", choices=["tl", "tr", "bl", "br"])
     ap.add_argument("--fit", default="contain", choices=["contain", "width", "height"])
     ap.add_argument("--margin", type=float, default=0.0, help="blank margin inside the card, inches")
+    ap.add_argument("--inset", type=float, default=0.0, help="gap between the card and the bed edges at the corner, inches")
     ap.add_argument("--out")
     a = ap.parse_args()
 
     w, h = (float(v) for v in a.card.lower().split("x"))
     plan = json.loads(Path(a.plan).read_text())
-    summary, report = fit(plan, w, h, a.corner, a.fit, a.margin)
+    summary, report = fit(plan, w, h, a.corner, a.fit, a.margin, a.inset)
     out = Path(a.out) if a.out else Path(a.plan).with_name(f"{Path(a.plan).name.split('.')[0]}-{a.card}-{a.corner}.boc.json")
     plan["name"] = out.name.removesuffix(".boc.json")
     out.write_text(json.dumps(plan))
