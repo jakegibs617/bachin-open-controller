@@ -158,3 +158,68 @@ export function applyArtworkTransform(
     };
   });
 }
+
+export interface LayerTransform {
+  x: number;
+  y: number;
+  scale: number;
+  scaleY: number;
+  rotation: number;
+  flipX: boolean;
+  flipY: boolean;
+}
+
+export interface LinkedLayer {
+  rawPaths: Path[];
+  transform: LayerTransform;
+}
+
+const pathsBounds = (paths: Path[]) => paths.reduce((b, p) => ({
+  minX: Math.min(b.minX, p.bounds.minX),
+  maxX: Math.max(b.maxX, p.bounds.maxX),
+  minY: Math.min(b.minY, p.bounds.minY),
+  maxY: Math.max(b.maxY, p.bounds.maxY)
+}), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
+
+// Each layer scales around its own bounds center, so giving layers that came from
+// one image the same scale pulls them out of register. This resizes the layers as
+// one group around the group's center (or a given anchor): every layer gets the same scale factor, and
+// its offset is adjusted to cancel the difference between its own center and the group's.
+export function transformLayersTogether(
+  layers: LinkedLayer[],
+  change: { factor?: number; dx?: number; dy?: number; anchor?: { x: number; y: number } }
+): LayerTransform[] {
+  const placed = layers.map((layer) => {
+    const raw = pathsBounds(layer.rawPaths);
+    const center = { x: (raw.minX + raw.maxX) / 2, y: (raw.minY + raw.maxY) / 2 };
+    const t = layer.transform;
+    const [box] = applyArtworkTransform(
+      [{ id: 'bounds', segments: [], bounds: raw }],
+      center.x, center.y, t.scale, t.scaleY, t.x, t.y, t.rotation, t.flipX, t.flipY
+    );
+    return { center, bounds: box.bounds };
+  });
+  const group = placed.reduce((b, p) => ({
+    minX: Math.min(b.minX, p.bounds.minX),
+    maxX: Math.max(b.maxX, p.bounds.maxX),
+    minY: Math.min(b.minY, p.bounds.minY),
+    maxY: Math.max(b.maxY, p.bounds.maxY)
+  }), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
+  const gx = change.anchor?.x ?? (group.minX + group.maxX) / 2;
+  const gy = change.anchor?.y ?? (group.minY + group.maxY) / 2;
+  const f = change.factor ?? 1;
+  const dx = change.dx ?? 0;
+  const dy = change.dy ?? 0;
+
+  return layers.map((layer, i) => {
+    const { center } = placed[i];
+    const t = layer.transform;
+    return {
+      ...t,
+      x: gx + (center.x + t.x - gx) * f - center.x + dx,
+      y: gy + (center.y + t.y - gy) * f - center.y + dy,
+      scale: t.scale * f,
+      scaleY: t.scaleY * f
+    };
+  });
+}
