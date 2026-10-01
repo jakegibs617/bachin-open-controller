@@ -4,6 +4,7 @@ import {
   isPhotoshopSignature,
   isSavedProjectData,
   SavedProjectData,
+  transformLayersTogether,
   withSavedAtNow
 } from '../src/ui/artworkPlan';
 import { Path } from '../src/types';
@@ -178,5 +179,54 @@ describe('Artwork plan helpers', () => {
       { x: 5, y: 0, penDown: true }
     ]);
     expect(result.bounds).toEqual({ minX: 5, maxX: 5, minY: 0, maxY: 20 });
+  });
+});
+
+describe('Linked layers', () => {
+  const square = (min: number, max: number): Path => ({
+    id: `square-${min}-${max}`,
+    segments: [
+      { x: min, y: min, penDown: false },
+      { x: max, y: min, penDown: true },
+      { x: max, y: max, penDown: true },
+      { x: min, y: max, penDown: true },
+      { x: min, y: min, penDown: true }
+    ],
+    bounds: { minX: min, maxX: max, minY: min, maxY: max }
+  });
+  const identity = { x: 0, y: 0, scale: 100, scaleY: 100, rotation: 0, flipX: false, flipY: false };
+
+  it('scales every layer around the shared group center so they stay in register', () => {
+    // Pen layers from one image: a 100 mm frame and a smaller mark in its corner.
+    const frame = { rawPaths: [square(0, 100)], transform: identity };
+    const mark = { rawPaths: [square(60, 100)], transform: identity };
+
+    const [frameT, markT] = transformLayersTogether([frame, mark], { factor: 0.5 });
+
+    // Worked by hand: group center is (50, 50); halving maps 0..100 to 25..75.
+    expect(frameT).toEqual({ ...identity, x: 0, y: 0, scale: 50, scaleY: 50 });
+    expect(markT).toEqual({ ...identity, x: -15, y: -15, scale: 50, scaleY: 50 });
+  });
+
+  it('can scale the group around a chosen anchor point', () => {
+    const frame = { rawPaths: [square(0, 100)], transform: identity };
+    const mark = { rawPaths: [square(60, 100)], transform: identity };
+
+    const [frameT, markT] = transformLayersTogether([frame, mark], { factor: 0.5, anchor: { x: 100, y: 100 } });
+
+    // Worked by hand: halving toward (100, 100) maps the frame to 50..100 (center 75)
+    // and the mark to 80..100 (center 90).
+    expect(frameT).toEqual({ ...identity, x: 25, y: 25, scale: 50, scaleY: 50 });
+    expect(markT).toEqual({ ...identity, x: 10, y: 10, scale: 50, scaleY: 50 });
+  });
+
+  it('moves every layer by the same amount', () => {
+    const frame = { rawPaths: [square(0, 100)], transform: { ...identity, x: 2, y: 3 } };
+    const mark = { rawPaths: [square(60, 100)], transform: { ...identity, x: -4, y: 1 } };
+
+    const [frameT, markT] = transformLayersTogether([frame, mark], { dx: 10, dy: -5 });
+
+    expect(frameT).toEqual({ ...identity, x: 12, y: -2 });
+    expect(markT).toEqual({ ...identity, x: 6, y: -4 });
   });
 });

@@ -19,7 +19,7 @@ import { app, BrowserWindow, ipcMain, powerSaveBlocker } from 'electron';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { GRBLController, listSerialPorts } from '../src/core/serial-grbl';
-import { validateGCodeJob } from '../src/core/gcode';
+import { validateGCodeJob, generateSpeedTestGCode } from '../src/core/gcode';
 import { safeProjectFileName } from '../src/core/projectFiles';
 import { isRecord } from '../src/core/typeGuards';
 import ta4Profile from '../profiles/ta4.json';
@@ -332,6 +332,18 @@ ipcMain.handle('serial:perimeterTest', async (_event, width?: number, height?: n
     await streamJobWhileAwake(controller, gcode);
   });
 });
+
+ipcMain.handle(
+  'serial:speedTest',
+  async (_event, speeds?: number[], boundaryMm?: number, turns?: number) => {
+    return runSerialAction(async () => {
+      const controller = requireController();
+      const { gcode } = generateSpeedTestGCode({ speeds: speeds ?? [], boundaryMm, turns }, machineProfile);
+      validateGCodeJob(gcode, machineProfile);
+      await streamJobWhileAwake(controller, gcode);
+    });
+  }
+);
 
 ipcMain.handle('serial:penDown', async () => {
   return runSerialAction(async () => {
