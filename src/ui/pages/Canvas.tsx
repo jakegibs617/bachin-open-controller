@@ -34,6 +34,7 @@ import {
   inferImageMimeType,
   isPhotoshopSignature,
   isSavedProjectData,
+  transformLayersTogether,
   withSavedAtNow
 } from '../artworkPlan';
 import ta4Profile from '../../../profiles/ta4.json';
@@ -177,6 +178,7 @@ interface DragState {
   startAngle: number; // radians from display center to startPt (used for rotate)
   rawBounds: BoundingBox;
   center: { x: number; y: number }; // raw image center
+  linkedStart?: ArtworkLayer[]; // every layer at drag start, when layers are linked
 }
 
 interface ActionSpeedSliderProps {
@@ -360,6 +362,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const [showGrid, setShowGrid] = React.useState(true);
   const [gridUnit, setGridUnit] = React.useState<GridUnit>('in');
   const [lockAspectRatio, setLockAspectRatio] = React.useState(true);
+  const [linkLayers, setLinkLayers] = React.useState(true);
   const [magnifierActive, setMagnifierActive] = React.useState(false);
   const [magnifierPos, setMagnifierPos] = React.useState<{ x: number; y: number } | null>(null);
   // Coalesce magnifier updates to one per animation frame so a fast pointer
@@ -559,6 +562,31 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     const activeSnapshot = snapshotActiveLayer();
     if (!activeSnapshot) return layersRef.current;
     return layersRef.current.map((layer) => layer.id === activeSnapshot.id ? activeSnapshot : layer);
+  };
+
+  // Layers traced from one image (one per pen color) must keep their relative
+  // placement, so while layers are linked, moves and resizes apply to all of them.
+  const linkedLayersActive = () => linkLayers && layersRef.current.length > 1;
+
+  const applyLinkedChange = (
+    base: ArtworkLayer[],
+    change: { factor?: number; dx?: number; dy?: number; anchor?: { x: number; y: number } },
+    regenerate = true
+  ) => {
+    const next = transformLayersTogether(base, change);
+    const activeId = activeLayerIdRef.current;
+    setLayers((current) => current.map((layer) => {
+      const index = base.findIndex((b) => b.id === layer.id);
+      return index >= 0 && layer.id !== activeId ? { ...layer, transform: next[index] } : layer;
+    }));
+    const activeIndex = base.findIndex((layer) => layer.id === activeId);
+    if (activeIndex < 0) return;
+    const t = next[activeIndex];
+    setOffsetX(t.x);
+    setOffsetY(t.y);
+    setImageScaleX(t.scale);
+    setImageScaleY(t.scaleY);
+    if (regenerate) applyTransformAndRegenerate(t.scale, t.scaleY, t.x, t.y, rotationRef.current);
   };
 
   // Four corners of the bounding box in display coordinates (for the selection polygon)
@@ -793,7 +821,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       startFlipY: flipYRef.current,
       startAngle: 0,
       rawBounds: bounds,
-      center: { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 }
+      center: { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 },
+      linkedStart: linkedLayersActive() ? mergedLayers() : undefined
     };
     setIsDragging(true);
     svgRef.current?.setPointerCapture(e.pointerId);
@@ -817,7 +846,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       startFlipY: flipYRef.current,
       startAngle: 0,
       rawBounds: bounds,
-      center: { x: cx, y: cy }
+      center: { x: cx, y: cy },
+      linkedStart: linkedLayersActive() ? mergedLayers() : undefined
     };
     setIsDragging(true);
     svgRef.current?.setPointerCapture(e.pointerId);
@@ -889,6 +919,17 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       const angleDeltaDeg = (currentAngle - state.startAngle) * (180 / Math.PI);
       setRotation(state.startRotation + angleDeltaDeg);
     }
+
+    if (state.linkedStart && state.mode !== 'rotate') {
+      // The active layer has already been updated above; bring the other layers along.
+      // A resize handle scales around the active layer's on-screen center.
+      applyLinkedChange(state.linkedStart, {
+        factor: imageScaleXRef.current / state.startScaleX,
+        dx: state.mode === 'move' ? offsetXRef.current - state.startOffset.x : 0,
+        dy: state.mode === 'move' ? offsetYRef.current - state.startOffset.y : 0,
+        anchor: { x: state.center.x + state.startOffset.x, y: state.center.y + state.startOffset.y }
+      }, false);
+    }
   };
 
   const handleSvgPointerUp = () => {
@@ -903,12 +944,20 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const handleOffsetChange = (axis: 'x' | 'y', value: number) => {
     const dx = axis === 'x' ? value : offsetXRef.current;
     const dy = axis === 'y' ? value : offsetYRef.current;
+    if (linkedLayersActive()) {
+      applyLinkedChange(mergedLayers(), { dx: dx - offsetXRef.current, dy: dy - offsetYRef.current });
+      return;
+    }
     setOffsetX(dx);
     setOffsetY(dy);
     applyTransformAndRegenerate(imageScaleXRef.current, imageScaleYRef.current, dx, dy, rotationRef.current);
   };
 
   const handleScaleChange = (newScale: number) => {
+    if (linkedLayersActive() && imageScaleXRef.current > 0) {
+      applyLinkedChange(mergedLayers(), { factor: newScale / imageScaleXRef.current });
+      return;
+    }
     setImageScale(newScale);
     applyTransformAndRegenerate(newScale, newScale, offsetXRef.current, offsetYRef.current, rotationRef.current);
   };
@@ -937,6 +986,15 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     } else {
       nextScaleX = axis === 'width' ? clamp(targetScale) : imageScaleXRef.current;
       nextScaleY = axis === 'width' ? imageScaleYRef.current : clamp(targetScale);
+    }
+
+    if (linkedLayersActive()) {
+      // Linked layers always resize uniformly, which is what keeps them aligned.
+      const factor = axis === 'width'
+        ? nextScaleX / imageScaleXRef.current
+        : nextScaleY / imageScaleYRef.current;
+      applyLinkedChange(mergedLayers(), { factor });
+      return;
     }
 
     setImageScaleX(nextScaleX);
@@ -2114,6 +2172,18 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           >
             {lockAspectRatio ? 'Lock ratio' : 'Free ratio'}
           </button>
+
+          {layersRef.current.length > 1 && (
+            <button
+              type="button"
+              className={`toolbar-btn transform-btn${linkLayers ? ' active' : ''}`}
+              aria-pressed={linkLayers}
+              title="Move and resize all layers together so pen colors stay aligned"
+              onClick={() => setLinkLayers(!linkLayers)}
+            >
+              {linkLayers ? 'Layers linked' : 'Layers unlinked'}
+            </button>
+          )}
 
           <label htmlFor="img-scale-range">Scale</label>
           <input

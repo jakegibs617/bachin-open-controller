@@ -4,6 +4,34 @@ All notable project changes should be recorded here during each coding session.
 Use the newest package version as the heading, and include both commit-message
 level summaries and practical details that help future sessions ramp up quickly.
 
+## [0.0.10] - 2026-09-30
+
+### Added
+
+- "Layers linked" toggle on the Artwork transform bar, shown when 2+ layers are
+  loaded and on by default. While linked, X/Y, W/H, Scale, canvas move-drag and
+  resize-drag apply to every layer as one group, so pen layers traced from one
+  image (one per color) stay in register.
+- `transformLayersTogether()` in `src/ui/artworkPlan.ts`: scales and moves layers
+  around the group center (or an anchor) and compensates each layer's offset.
+
+### Why
+
+- Each layer scales around its own bounds center. Giving two color layers of one
+  image the same scale % shifted them apart (0.6 mm on a 5x7 card scaled to 4x6).
+
+### Notes
+
+- Rotate and Flip still apply to the active layer only.
+- Linked resizes are always uniform.
+
+### Verified
+
+- `npx jest` (56 passed, hardware test skipped)
+- `npx tsc --noEmit`, eslint on changed files
+- Playwright smoke run on a real two-layer plan: W 5.80 -> 4.00 in kept both
+  layers at the same scale, with the green layer offset matching the hand-computed correction.
+
 ## [0.0.8] - 2026-05-10
 
 ### Changed
