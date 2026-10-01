@@ -4,6 +4,25 @@ function rgba(pixels: Array<[number, number, number, number]>): Uint8ClampedArra
   return new Uint8ClampedArray(pixels.flat());
 }
 
+// '#' is a black pixel, anything else is white. Traced at 1 canvas unit per pixel.
+function traceDrawing(rows: string[], mode: 'centerline') {
+  const width = rows[0].length;
+  const height = rows.length;
+  const data = rgba(rows.flatMap((row) => [...row].map((c): [number, number, number, number] => (
+    c === '#' ? [0, 0, 0, 255] : [255, 255, 255, 255]
+  ))));
+  return traceRasterToPaths(data, width, height, {
+    canvasWidth: width - 1,
+    canvasHeight: height - 1,
+    mode,
+    threshold: 128
+  });
+}
+
+function strokeEnds(paths: ReturnType<typeof traceRasterToPaths>): string[] {
+  const ends = paths.flatMap((path) => [path.segments[0], path.segments[path.segments.length - 1]]);
+  return [...new Set(ends.map((p) => `${Math.round(p.x)},${Math.round(p.y)}`))].sort();
+}
 
 describe('Raster tracing', () => {
   it('collapses connected fill pixels into the fewest candidate stroke', () => {
@@ -194,6 +213,39 @@ describe('Raster tracing', () => {
 
     expect(adaptive.length).toBeGreaterThan(global.length);
     expect(adaptive.some(path => path.segments[0].x === 15 || path.segments[1].x === 15)).toBe(true);
+  });
+
+  it('keeps every branch of a T junction in centerline mode', () => {
+    const paths = traceDrawing([
+      '#########',
+      '....#....',
+      '....#....',
+      '....#....',
+      '....#....',
+      '....#....',
+      '....#....',
+      '....#....',
+      '....#....'
+    ], 'centerline');
+
+    // Both ends of the bar and the foot of the stem must each end a stroke.
+    expect(strokeEnds(paths)).toEqual(expect.arrayContaining(['0,0', '8,0', '4,8']));
+  });
+
+  it('keeps a separate straight line next to a branching shape in centerline mode', () => {
+    const paths = traceDrawing([
+      '#########...',
+      '....#.......',
+      '....#......#',
+      '....#......#',
+      '....#......#',
+      '....#......#',
+      '....#......#',
+      '....#......#',
+      '....#.......'
+    ], 'centerline');
+
+    expect(strokeEnds(paths)).toEqual(expect.arrayContaining(['11,2', '11,7']));
   });
 
   it('reduces a diagonal centerline to the least straight stroke', () => {

@@ -745,6 +745,14 @@ function buildSkeletonGraph(
   const edgeVisited = new Uint8Array(width * height);
 
   const traceEdge = (fromNi: number, sx: number, sy: number): void => {
+    // Two touching nodes are linked directly. Each sees the other as a neighbor, so
+    // skip the second direction; a duplicate edge would be drawn twice and would
+    // stop an end pixel from being recognised as an endpoint.
+    const directNi = nodeMap[sy * width + sx];
+    if (directNi !== -1 && nodes[fromNi].edgeIds.some((eid) => (
+      edges[eid].pixels.length === 2
+      && (edges[eid].nodeA === directNi || edges[eid].nodeB === directNi)
+    ))) return;
     if (edgeVisited[sy * width + sx]) return;
     const pixels: Array<{ x: number; y: number }> = [
       { x: nodes[fromNi].x, y: nodes[fromNi].y },
@@ -939,6 +947,9 @@ function skeletonToPaths(
       }
       curNode = reversed ? e.nodeA : e.nodeB;
     }
+    // The loop ends as soon as the last edge is used, so the stroke in progress
+    // still needs emitting; otherwise every component loses its final stroke.
+    emitPath(curPixels);
   }
 
   const sorted = sortPathsNearestNeighbor(paths);
@@ -948,7 +959,8 @@ function skeletonToPaths(
 // Greedy nearest-neighbor reordering: each next path is the one whose start
 // or end is closest to the current pen position, minimizing travel between strokes.
 function sortPathsNearestNeighbor(paths: Path[]): Path[] {
-  if (paths.length <= 1) return paths;
+  // A single path still gets oriented so it starts at the end nearest the origin.
+  if (paths.length === 0) return paths;
 
   const remaining = paths.slice();
   const sorted: Path[] = [];
