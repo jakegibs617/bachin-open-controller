@@ -4,6 +4,7 @@ function rgba(pixels: Array<[number, number, number, number]>): Uint8ClampedArra
   return new Uint8ClampedArray(pixels.flat());
 }
 
+
 describe('Raster tracing', () => {
   it('collapses connected fill pixels into the fewest candidate stroke', () => {
     const data = rgba([
@@ -69,6 +70,33 @@ describe('Raster tracing', () => {
     expect(paths[0].segments[1]).toMatchObject({ x: 30, y: 30, penDown: true });
   });
 
+  it('adds supplemental fill strokes instead of dropping uncovered shape arms', () => {
+    const data = rgba([
+      [0, 0, 0, 255], [255, 255, 255, 255], [255, 255, 255, 255],
+      [0, 0, 0, 255], [255, 255, 255, 255], [255, 255, 255, 255],
+      [0, 0, 0, 255], [0, 0, 0, 255], [0, 0, 0, 255]
+    ]);
+
+    const paths = traceRasterToPaths(data, 3, 3, {
+      canvasWidth: 30,
+      canvasHeight: 30,
+      mode: 'fill',
+      threshold: 128,
+      yStep: 1,
+      minRunLength: 2
+    });
+
+    expect(paths).toHaveLength(2);
+    expect(paths[0].segments).toEqual([
+      { x: 0, y: 0, penDown: false },
+      { x: 0, y: 30, penDown: true }
+    ]);
+    expect(paths[1].segments).toEqual([
+      { x: 15, y: 30, penDown: false },
+      { x: 30, y: 30, penDown: true }
+    ]);
+  });
+
   it('traces dark pixel outlines by default', () => {
     const data = rgba([
       [0, 0, 0, 255]
@@ -118,6 +146,23 @@ describe('Raster tracing', () => {
 
     expect(paths.length).toBeGreaterThan(0);
     expect(paths.length).toBeLessThan(4);
+  });
+
+  it('keeps dither output on row-based fill strokes', () => {
+    const data = rgba([
+      [64, 64, 64, 255], [64, 64, 64, 255],
+      [64, 64, 64, 255], [64, 64, 64, 255]
+    ]);
+
+    const paths = traceRasterToPaths(data, 2, 2, {
+      canvasWidth: 20,
+      canvasHeight: 20,
+      mode: 'dither',
+      yStep: 1,
+      minRunLength: 1
+    });
+
+    expect(paths.every(path => path.segments[0].y === path.segments[1].y)).toBe(true);
   });
 
   it('uses local neighborhoods for adaptive thresholding', () => {

@@ -42,7 +42,7 @@ export function traceRasterToPaths(
     return traceRasterCenterline(binary, width, height, options);
   }
   if (options.mode === 'dither') {
-    return traceRasterFill(binary, width, height, options);
+    return traceRasterRowFill(binary, width, height, options);
   }
   if (options.mode === 'contour-fill') {
     return traceRasterContourFill(binary, width, height, options);
@@ -57,11 +57,22 @@ function traceRasterFill(
   height: number,
   options: RasterTraceOptions
 ): Path[] {
-  const adaptive = traceAdaptiveRasterFill(binary, width, height, options);
+  const adaptive = shouldUseAdaptiveRasterFill(binary, width, height, options)
+    ? traceAdaptiveRasterFill(binary, width, height, options)
+    : [];
   if (adaptive.length > 0) {
     return adaptive;
   }
 
+  return traceRasterRowFill(binary, width, height, options);
+}
+
+function traceRasterRowFill(
+  binary: Uint8Array,
+  width: number,
+  height: number,
+  options: RasterTraceOptions
+): Path[] {
   const xStep = Math.max(1, Math.floor(options.xStep ?? 1));
   const yStep = Math.max(1, Math.floor(options.yStep ?? 2));
   const minRunLength = Math.max(1, Math.floor(options.minRunLength ?? 2));
@@ -107,6 +118,27 @@ function traceRasterFill(
 
 type PixelPoint = { x: number; y: number };
 
+function shouldUseAdaptiveRasterFill(
+  binary: Uint8Array,
+  width: number,
+  height: number,
+  options: RasterTraceOptions
+): boolean {
+  if (options.mode !== 'fill') return false;
+  if (width * height > 512 * 512) return false;
+
+  let darkPixels = 0;
+  const maxDarkPixels = 50_000;
+  for (let index = 0; index < binary.length; index++) {
+    if (binary[index] === 1) {
+      darkPixels++;
+      if (darkPixels > maxDarkPixels) return false;
+    }
+  }
+
+  return darkPixels > 0;
+}
+
 function traceAdaptiveRasterFill(
   binary: Uint8Array,
   width: number,
@@ -119,7 +151,14 @@ function traceAdaptiveRasterFill(
 
   for (const component of components) {
     const candidate = chooseBestFillCandidate(component, options);
-    for (const run of candidate.runs) {
+    const covered = coveredPixelKeys(candidate.runs);
+    const missing = component.filter(pixel => !covered.has(pixelKey(pixel)));
+    const supplemental = missing.length > 0 ? chooseBestFillCandidate(missing, options) : null;
+    const runs = supplemental && supplemental.coveredCount > 0
+      ? [...candidate.runs, ...supplemental.runs]
+      : candidate.runs;
+
+    for (const run of runs) {
       const start = toCanvasPoint(run[0].x, run[0].y, width, height, fit);
       const end = toCanvasPoint(run[run.length - 1].x, run[run.length - 1].y, width, height, fit);
       const segments = [
@@ -197,9 +236,9 @@ function chooseBestFillCandidate(
   for (let i = 1; i < pool.length; i++) {
     const candidate = pool[i].candidate;
     if ((best.runs.length === 0 && candidate.runs.length > 0)
-      || (candidate.runs.length > 0 && candidate.runs.length < best.runs.length)
-      || (candidate.runs.length === best.runs.length && candidate.coveredCount > best.coveredCount)
-      || (candidate.runs.length === best.runs.length && candidate.coveredCount === best.coveredCount && candidate.travelScore < best.travelScore)) {
+      || (candidate.coveredCount > best.coveredCount)
+      || (candidate.coveredCount === best.coveredCount && candidate.runs.length > 0 && candidate.runs.length < best.runs.length)
+      || (candidate.coveredCount === best.coveredCount && candidate.runs.length === best.runs.length && candidate.travelScore < best.travelScore)) {
       best = candidate;
     }
   }
@@ -305,6 +344,20 @@ function buildFillCandidate(
   };
 }
 
+function coveredPixelKeys(runs: PixelPoint[][]): Set<string> {
+  const covered = new Set<string>();
+  for (const run of runs) {
+    for (const pixel of run) {
+      covered.add(pixelKey(pixel));
+    }
+  }
+  return covered;
+}
+
+function pixelKey(point: PixelPoint): string {
+  return `${point.x},${point.y}`;
+}
+
 function pushCandidateRun(
   runs: PixelPoint[][],
   run: Array<PixelPoint & { u: number }>,
@@ -342,6 +395,7 @@ function traceThinComponentsToPaths(
   const paths: Path[] = [];
 
   for (const component of findDarkComponents(binary, width, height)) {
+    if (component.length > 4096) continue;
     const ordered = orderThinComponent(component);
     if (ordered.length < 2) continue;
     const simplified = simplifyDouglasPeucker(ordered, 0.45);
@@ -383,14 +437,15 @@ function orderThinComponent(component: PixelPoint[]): PixelPoint[] {
   while (ordered.length < component.length) {
     const current = ordered[ordered.length - 1];
     let next: PixelPoint | undefined;
-    let bestDistance = Infinity;
 
-    for (const point of component) {
-      if (visited.has(key(point))) continue;
-      const distance = Math.hypot(point.x - current.x, point.y - current.y);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        next = point;
+    for (let dy = -1; dy <= 1 && !next; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const point = points.get(`${current.x + dx},${current.y + dy}`);
+        if (point && !visited.has(key(point))) {
+          next = point;
+          break;
+        }
       }
     }
 
@@ -567,24 +622,9 @@ function traceRasterCenterline(
   const binary = new Uint8Array(width * height);
   binary.set(sourceBinary);
 
-  if (!isAlreadyOnePixelCenterline(binary, width, height)) {
-    zhangSuenThin(binary, width, height);
-  }
+  zhangSuenThin(binary, width, height);
   const paths = skeletonToPaths(binary, width, height, options);
   return paths.length > 0 ? paths : traceThinComponentsToPaths(sourceBinary, width, height, options);
-}
-
-function isAlreadyOnePixelCenterline(binary: Uint8Array, width: number, height: number): boolean {
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      if (binary[y * width + x] !== 1) continue;
-      if (skelNeighbors(binary, width, height, x, y).length > 2) {
-        return false;
-      }
-    }
-  }
-
-  return true;
 }
 
 // Zhang-Suen morphological thinning — reduces dark regions to 1-pixel-wide skeleton.
