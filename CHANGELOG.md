@@ -4,6 +4,51 @@ All notable project changes should be recorded here during each coding session.
 Use the newest package version as the heading, and include both commit-message
 level summaries and practical details that help future sessions ramp up quickly.
 
+## [0.0.11] - 2026-10-02
+
+### Added (Claude Code workflow)
+
+- `.claude/agents/`: four project subagents for the development workflow.
+  - `implementor`: test-first changes; never commits, bumps versions or packages.
+  - `code-simplifier`: behavior-preserving cleanup limited to the branch's
+    changed code; leaves profile values and G-code numbers identical.
+  - `security-reviewer`: read-only. Checks the IPC trust boundary, machine
+    bounds, importers, gate files and clean-room against
+    `docs/architecture-security-assessment.md`. Reads untracked files too, and
+    ends with `SECURITY: BLOCK|WARN|PASS @<sha>`.
+  - `pr-reviewer`: read-only final gate. Blocks on security WARN/BLOCK (or a
+    missing or stale status for a code change), failing
+    lint/test/build/regression eval, a missing changelog entry, or gate-file
+    changes the user hasn't approved.
+- `docs/session-workflow.md`: new "Subagent Pipeline" section with the order
+  implementor → code-simplifier → security-reviewer → finish steps → pr-reviewer.
+  It defines "code change" and "gate files" (`profiles/`, `.claude/agents/`,
+  `.claude/evals/`, this doc), and sends WARN as well as BLOCK back to step 1.
+  The finish-step commands now exclude the hardware suite and drop the no-op
+  `build dev` argument.
+- `.claude/evals/regression-baseline.md` (baseline added in PR #16): the grader
+  now compares against master's `baseline.json`, and the Human Grader is marked
+  user-only.
+- `.gitignore`: adds `!.claude/agents/` so the subagents are tracked alongside
+  `.claude/skills/` and `.claude/evals/`.
+
+### Security review (PR #17)
+
+- The first `security-reviewer` run returned `SECURITY: WARN`, with findings
+  about the pipeline as a control. New files were invisible to the review, a
+  status went stale after later edits, "code" was undefined, a branch could
+  lower its own baseline, one case had conflicting severities, the WARN wording
+  was ambiguous, and the safety limits relied on prompt wording alone. All seven
+  are fixed above.
+
+### Verification
+
+- No app code changed.
+- `npm.cmd run lint`: pass
+- `npm.cmd test -- --runInBand --testPathIgnorePatterns hardware`: pass (64/64)
+- `npm.cmd run build`: pass
+- `npm.cmd run package`: deferred, because a plot was running from the packaged app.
+
 ## [0.0.10] - 2026-09-30
 
 ### Added

@@ -30,8 +30,10 @@ and it opens a real serial port.
 # Run 3 times (pass^3). Write JSON outside the repo.
 npx jest --runInBand --testPathIgnorePatterns hardware --json --outputFile=<tmp>/runN.json
 
-# Compare per-suite counts against the baseline
-node -e "const b=require('./.claude/evals/baseline.json'),r=require(process.argv[1]),p=require('path');let ok=r.success;for(const t of r.testResults){const f=p.basename(t.name),n=t.assertionResults.filter(a=>a.status==='passed').length;if(n<(b.suites[f]||0)){ok=false;console.log('REGRESSION',f,n,'<',b.suites[f])}}for(const f in b.suites)if(!r.testResults.some(t=>p.basename(t.name)===f)){ok=false;console.log('MISSING',f)}console.log(ok?'PASS':'FAIL')" <tmp>/runN.json
+# Compare per-suite counts against master's baseline, not the branch copy,
+# so a branch can't lower its own bar
+git show master:.claude/evals/baseline.json > <tmp>/baseline.json
+node -e "const b=require(process.argv[2]),r=require(process.argv[1]),p=require('path');let ok=r.success;for(const t of r.testResults){const f=p.basename(t.name),n=t.assertionResults.filter(a=>a.status==='passed').length;if(n<(b.suites[f]||0)){ok=false;console.log('REGRESSION',f,n,'<',b.suites[f])}}for(const f in b.suites)if(!r.testResults.some(t=>p.basename(t.name)===f)){ok=false;console.log('MISSING',f)}console.log(ok?'PASS':'FAIL')" <tmp>/runN.json <tmp>/baseline.json
 
 npm run build && echo PASS || echo FAIL
 npm run lint  && echo PASS || echo FAIL
@@ -46,6 +48,9 @@ npm run lint  && echo PASS || echo FAIL
 - Build and lint exit 0
 
 ## Human Grader
+
+For the user only. Agents never run this, and it is not part of an agent's
+eval check.
 
 ```
 [HUMAN REVIEW REQUIRED]
