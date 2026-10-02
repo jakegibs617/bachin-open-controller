@@ -4,12 +4,16 @@ Desktop.ini
 .DS_Store
 .idea/
 .vscode/
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/evals/
+!.claude/agents/
 
 # Future build outputs
 dist/
 build/
 out/
+BachinApp.app/
 node_modules/
 target/
 __pycache__/

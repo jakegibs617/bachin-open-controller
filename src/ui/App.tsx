@@ -19,11 +19,13 @@ export interface PreparedJob {
   paths: Path[];
   gcode: string[];
   warnings: JobWarning[];
+  // When set, the job cannot be executed (e.g. more than one layer is shown).
+  runBlockedReason?: string;
 }
 
 export const App: React.FC = () => {
   const [page, setPage] = React.useState<Page>('controls');
-  const [units, setUnits] = React.useState<LengthUnit>('cm');
+  const [units, setUnits] = React.useState<LengthUnit>('in');
   const [theme, setTheme] = React.useState<Theme>(() => {
     const savedTheme = window.localStorage.getItem('bachin-theme');
     if (savedTheme === 'light' || savedTheme === 'dark') {

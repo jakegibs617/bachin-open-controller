@@ -2,7 +2,7 @@ import { Path } from '../../types';
 
 export interface RasterTraceOptions {
   threshold?: number;
-  mode?: 'outline' | 'fill' | 'centerline' | 'dither';
+  mode?: 'outline' | 'fill' | 'centerline' | 'dither' | 'contour-fill';
   xStep?: number;
   yStep?: number;
   minRunLength?: number;
@@ -42,13 +42,32 @@ export function traceRasterToPaths(
     return traceRasterCenterline(binary, width, height, options);
   }
   if (options.mode === 'dither') {
-    return traceRasterFill(binary, width, height, options);
+    return traceRasterRowFill(binary, width, height, options);
+  }
+  if (options.mode === 'contour-fill') {
+    return traceRasterContourFill(binary, width, height, options);
   }
 
   return traceRasterOutline(binary, width, height, options);
 }
 
 function traceRasterFill(
+  binary: Uint8Array,
+  width: number,
+  height: number,
+  options: RasterTraceOptions
+): Path[] {
+  const adaptive = shouldUseAdaptiveRasterFill(binary, width, height, options)
+    ? traceAdaptiveRasterFill(binary, width, height, options)
+    : [];
+  if (adaptive.length > 0) {
+    return adaptive;
+  }
+
+  return traceRasterRowFill(binary, width, height, options);
+}
+
+function traceRasterRowFill(
   binary: Uint8Array,
   width: number,
   height: number,
@@ -97,6 +116,347 @@ function traceRasterFill(
   return paths;
 }
 
+type PixelPoint = { x: number; y: number };
+
+function shouldUseAdaptiveRasterFill(
+  binary: Uint8Array,
+  width: number,
+  height: number,
+  options: RasterTraceOptions
+): boolean {
+  if (options.mode !== 'fill') return false;
+  if (width * height > 512 * 512) return false;
+
+  let darkPixels = 0;
+  const maxDarkPixels = 50_000;
+  for (let index = 0; index < binary.length; index++) {
+    if (binary[index] === 1) {
+      darkPixels++;
+      if (darkPixels > maxDarkPixels) return false;
+    }
+  }
+
+  return darkPixels > 0;
+}
+
+function traceAdaptiveRasterFill(
+  binary: Uint8Array,
+  width: number,
+  height: number,
+  options: RasterTraceOptions
+): Path[] {
+  const fit = computeFit(width, height, options.canvasWidth, options.canvasHeight);
+  const paths: Path[] = [];
+  const components = findDarkComponents(binary, width, height);
+
+  for (const component of components) {
+    const candidate = chooseBestFillCandidate(component, options);
+    const covered = coveredPixelKeys(candidate.runs);
+    const missing = component.filter(pixel => !covered.has(pixelKey(pixel)));
+    const supplemental = missing.length > 0 ? chooseBestFillCandidate(missing, options) : null;
+    const runs = supplemental && supplemental.coveredCount > 0
+      ? [...candidate.runs, ...supplemental.runs]
+      : candidate.runs;
+
+    for (const run of runs) {
+      const start = toCanvasPoint(run[0].x, run[0].y, width, height, fit);
+      const end = toCanvasPoint(run[run.length - 1].x, run[run.length - 1].y, width, height, fit);
+      const segments = [
+        { ...start, penDown: false },
+        { ...end, penDown: true }
+      ];
+      paths.push({
+        id: `raster-run-${paths.length + 1}`,
+        segments,
+        bounds: computeBounds(segments)
+      });
+    }
+  }
+
+  return sortPathsNearestNeighbor(paths);
+}
+
+function findDarkComponents(binary: Uint8Array, width: number, height: number): PixelPoint[][] {
+  const visited = new Uint8Array(width * height);
+  const components: PixelPoint[][] = [];
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const startIndex = y * width + x;
+      if (binary[startIndex] !== 1 || visited[startIndex]) continue;
+
+      const component: PixelPoint[] = [];
+      const stack: PixelPoint[] = [{ x, y }];
+      visited[startIndex] = 1;
+
+      while (stack.length > 0) {
+        const pixel = stack.pop()!;
+        component.push(pixel);
+
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = pixel.x + dx;
+            const ny = pixel.y + dy;
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+            const index = ny * width + nx;
+            if (binary[index] !== 1 || visited[index]) continue;
+            visited[index] = 1;
+            stack.push({ x: nx, y: ny });
+          }
+        }
+      }
+
+      components.push(component);
+    }
+  }
+
+  return components;
+}
+
+function chooseBestFillCandidate(
+  component: PixelPoint[],
+  options: RasterTraceOptions
+): { runs: PixelPoint[][]; travelScore: number; coveredCount: number } {
+  const principalAngle = estimatePrincipalAngle(component);
+  const candidateAngles = uniqueAngles([
+    0,
+    Math.PI / 2,
+    Math.PI / 4,
+    (3 * Math.PI) / 4,
+    principalAngle,
+    principalAngle + Math.PI / 2
+  ]);
+  const candidates = candidateAngles
+    .map(angle => ({ angle, candidate: buildFillCandidate(component, angle, options) }));
+  const eligible = candidates.filter(({ candidate }) => candidate.runs.length > 0);
+  const pool = eligible.length > 0 ? eligible : candidates;
+  let best = pool[0].candidate;
+
+  for (let i = 1; i < pool.length; i++) {
+    const candidate = pool[i].candidate;
+    if ((best.runs.length === 0 && candidate.runs.length > 0)
+      || (candidate.coveredCount > best.coveredCount)
+      || (candidate.coveredCount === best.coveredCount && candidate.runs.length > 0 && candidate.runs.length < best.runs.length)
+      || (candidate.coveredCount === best.coveredCount && candidate.runs.length === best.runs.length && candidate.travelScore < best.travelScore)) {
+      best = candidate;
+    }
+  }
+
+  return best;
+}
+
+function estimatePrincipalAngle(component: PixelPoint[]): number {
+  if (component.length <= 1) return 0;
+
+  let meanX = 0;
+  let meanY = 0;
+  for (const pixel of component) {
+    meanX += pixel.x;
+    meanY += pixel.y;
+  }
+  meanX /= component.length;
+  meanY /= component.length;
+
+  let xx = 0;
+  let yy = 0;
+  let xy = 0;
+  for (const pixel of component) {
+    const dx = pixel.x - meanX;
+    const dy = pixel.y - meanY;
+    xx += dx * dx;
+    yy += dy * dy;
+    xy += dx * dy;
+  }
+
+  return normalizeAngle(0.5 * Math.atan2(2 * xy, xx - yy));
+}
+
+function uniqueAngles(angles: number[]): number[] {
+  const result: number[] = [];
+  for (const angle of angles) {
+    const normalized = normalizeAngle(angle);
+    if (!result.some(existing => Math.abs(existing - normalized) < 0.01 || Math.abs(Math.PI - Math.abs(existing - normalized)) < 0.01)) {
+      result.push(normalized);
+    }
+  }
+  return result;
+}
+
+function normalizeAngle(angle: number): number {
+  let normalized = angle % Math.PI;
+  if (normalized < 0) normalized += Math.PI;
+  return normalized;
+}
+
+function buildFillCandidate(
+  component: PixelPoint[],
+  angle: number,
+  options: RasterTraceOptions
+): { runs: PixelPoint[][]; travelScore: number; coveredCount: number } {
+  const xStep = Math.max(1, Math.floor(options.xStep ?? 1));
+  const yStep = Math.max(1, Math.floor(options.yStep ?? 2));
+  const minRunLength = Math.max(1, Math.floor(options.minRunLength ?? 2));
+  const dirX = Math.cos(angle);
+  const dirY = Math.sin(angle);
+  const normalX = -dirY;
+  const normalY = dirX;
+  const spacing = Math.max(1, yStep);
+  const maxGap = Math.max(1.5, xStep * 1.75);
+  const bins = new Map<number, Array<PixelPoint & { u: number }>>();
+
+  for (const pixel of component) {
+    const u = pixel.x * dirX + pixel.y * dirY;
+    const v = pixel.x * normalX + pixel.y * normalY;
+    const bin = Math.round(v / spacing);
+    const row = bins.get(bin);
+    if (row) {
+      row.push({ ...pixel, u });
+    } else {
+      bins.set(bin, [{ ...pixel, u }]);
+    }
+  }
+
+  const runs: PixelPoint[][] = [];
+  let coveredCount = 0;
+  const sortedBins = [...bins.keys()].sort((a, b) => a - b);
+  for (const bin of sortedBins) {
+    const row = bins.get(bin)!;
+    row.sort((a, b) => a.u - b.u);
+    let run: Array<PixelPoint & { u: number }> = [];
+
+    for (const pixel of row) {
+      const previous = run[run.length - 1];
+      if (previous && pixel.u - previous.u > maxGap) {
+        coveredCount += pushCandidateRun(runs, run, minRunLength);
+        run = [];
+      }
+      run.push(pixel);
+    }
+
+    coveredCount += pushCandidateRun(runs, run, minRunLength);
+  }
+
+  return {
+    runs,
+    travelScore: scoreRunTravel(runs),
+    coveredCount
+  };
+}
+
+function coveredPixelKeys(runs: PixelPoint[][]): Set<string> {
+  const covered = new Set<string>();
+  for (const run of runs) {
+    for (const pixel of run) {
+      covered.add(pixelKey(pixel));
+    }
+  }
+  return covered;
+}
+
+function pixelKey(point: PixelPoint): string {
+  return `${point.x},${point.y}`;
+}
+
+function pushCandidateRun(
+  runs: PixelPoint[][],
+  run: Array<PixelPoint & { u: number }>,
+  minRunLength: number
+): number {
+  if (run.length < minRunLength) return 0;
+  runs.push(run.map(pixel => ({ x: pixel.x, y: pixel.y })));
+  return run.length;
+}
+
+function scoreRunTravel(runs: PixelPoint[][]): number {
+  let score = 0;
+  let x = 0;
+  let y = 0;
+
+  for (const run of runs) {
+    const start = run[0];
+    const end = run[run.length - 1];
+    score += Math.hypot(start.x - x, start.y - y);
+    score += Math.hypot(end.x - start.x, end.y - start.y);
+    x = end.x;
+    y = end.y;
+  }
+
+  return score;
+}
+
+function traceThinComponentsToPaths(
+  binary: Uint8Array,
+  width: number,
+  height: number,
+  options: RasterTraceOptions
+): Path[] {
+  const fit = computeFit(width, height, options.canvasWidth, options.canvasHeight);
+  const paths: Path[] = [];
+
+  for (const component of findDarkComponents(binary, width, height)) {
+    if (component.length > 4096) continue;
+    const ordered = orderThinComponent(component);
+    if (ordered.length < 2) continue;
+    const simplified = simplifyDouglasPeucker(ordered, 0.45);
+    const segments = simplified.map((pt, index) => ({
+      ...toCanvasPoint(pt.x, pt.y, width, height, fit),
+      penDown: index > 0
+    }));
+    paths.push({
+      id: `raster-centerline-${paths.length + 1}`,
+      segments,
+      bounds: computeBounds(segments)
+    });
+  }
+
+  const pixelWidth = width > 1 ? fit.drawWidth / (width - 1) : fit.drawWidth;
+  const pixelHeight = height > 1 ? fit.drawHeight / (height - 1) : fit.drawHeight;
+  return bridgeNearbyPaths(sortPathsNearestNeighbor(paths), Math.max(pixelWidth, pixelHeight) * 5);
+}
+
+function orderThinComponent(component: PixelPoint[]): PixelPoint[] {
+  if (component.length <= 2) return component;
+
+  const key = (point: PixelPoint) => `${point.x},${point.y}`;
+  const points = new Map(component.map(point => [key(point), point]));
+  const neighborCount = (point: PixelPoint) => {
+    let count = 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        if (points.has(`${point.x + dx},${point.y + dy}`)) count++;
+      }
+    }
+    return count;
+  };
+  const start = component.find(point => neighborCount(point) <= 1) ?? component[0];
+  const ordered: PixelPoint[] = [start];
+  const visited = new Set([key(start)]);
+
+  while (ordered.length < component.length) {
+    const current = ordered[ordered.length - 1];
+    let next: PixelPoint | undefined;
+
+    for (let dy = -1; dy <= 1 && !next; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const point = points.get(`${current.x + dx},${current.y + dy}`);
+        if (point && !visited.has(key(point))) {
+          next = point;
+          break;
+        }
+      }
+    }
+
+    if (!next) break;
+    ordered.push(next);
+    visited.add(key(next));
+  }
+
+  return ordered;
+}
+
 function traceRasterOutline(
   binary: Uint8Array,
   width: number,
@@ -130,6 +490,129 @@ function traceRasterOutline(
   return paths;
 }
 
+// Finds each connected dark region, outlines it fully, then fills it with horizontal
+// scan lines before moving on to the next region. Designed for type/letterforms where
+// each glyph should be completed (outline + fill) before the pen travels to the next.
+function traceRasterContourFill(
+  binary: Uint8Array,
+  width: number,
+  height: number,
+  options: RasterTraceOptions
+): Path[] {
+  const xStep = Math.max(1, Math.floor(options.xStep ?? 1));
+  const yStep = Math.max(1, Math.floor(options.yStep ?? 2));
+  const minRunLength = Math.max(1, Math.floor(options.minRunLength ?? 2));
+  const fit = computeFit(width, height, options.canvasWidth, options.canvasHeight);
+
+  // BFS connected-component labeling (4-connectivity)
+  const labels = new Int32Array(width * height).fill(-1);
+  const componentBounds: Array<{ minX: number; minY: number; maxX: number; maxY: number }> = [];
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      if (binary[i] !== 1 || labels[i] !== -1) continue;
+
+      const label = componentBounds.length;
+      let minX = x, minY = y, maxX = x, maxY = y;
+      const queue: number[] = [i];
+      labels[i] = label;
+
+      while (queue.length > 0) {
+        const idx = queue.pop()!;
+        const cx = idx % width;
+        const cy = (idx / width) | 0;
+        if (cx < minX) minX = cx;
+        if (cx > maxX) maxX = cx;
+        if (cy < minY) minY = cy;
+        if (cy > maxY) maxY = cy;
+
+        const up = cy > 0 ? idx - width : -1;
+        const dn = cy < height - 1 ? idx + width : -1;
+        const lt = cx > 0 ? idx - 1 : -1;
+        const rt = cx < width - 1 ? idx + 1 : -1;
+        for (const n of [up, dn, lt, rt]) {
+          if (n !== -1 && binary[n] === 1 && labels[n] === -1) {
+            labels[n] = label;
+            queue.push(n);
+          }
+        }
+      }
+
+      componentBounds.push({ minX, minY, maxX, maxY });
+    }
+  }
+
+  // Sort components reading-order: top-to-bottom then left-to-right
+  const order = componentBounds
+    .map((b, label) => ({ label, b }))
+    .sort((a, b) => a.b.minY !== b.b.minY ? a.b.minY - b.b.minY : a.b.minX - b.b.minX)
+    .map(({ label }) => label);
+
+  const paths: Path[] = [];
+
+  for (const label of order) {
+    const { minX, minY, maxX, maxY } = componentBounds[label];
+
+    // Outline: emit a pixel-edge segment for every face that borders a non-component cell
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        if (labels[y * width + x] !== label) continue;
+
+        if (y === 0 || labels[(y - 1) * width + x] !== label) {
+          paths.push(edgePath(paths.length + 1, x, y, x + 1, y, width, height, fit));
+        }
+        if (x === width - 1 || labels[y * width + x + 1] !== label) {
+          paths.push(edgePath(paths.length + 1, x + 1, y, x + 1, y + 1, width, height, fit));
+        }
+        if (y === height - 1 || labels[(y + 1) * width + x] !== label) {
+          paths.push(edgePath(paths.length + 1, x + 1, y + 1, x, y + 1, width, height, fit));
+        }
+        if (x === 0 || labels[y * width + x - 1] !== label) {
+          paths.push(edgePath(paths.length + 1, x, y + 1, x, y, width, height, fit));
+        }
+      }
+    }
+
+    // Fill: horizontal scan lines clipped to this component
+    for (let y = minY; y <= maxY; y += yStep) {
+      let runStart: number | null = null;
+
+      for (let x = minX; x <= maxX + xStep; x += xStep) {
+        const inComp = x <= maxX && labels[y * width + x] === label;
+
+        if (inComp && runStart === null) {
+          runStart = x;
+        }
+
+        if (!inComp && runStart !== null) {
+          const runEnd = x - xStep;
+          if (runEnd - runStart + xStep >= minRunLength) {
+            const start = toCanvasPoint(runStart, y, width, height, fit);
+            const end = toCanvasPoint(runEnd, y, width, height, fit);
+            paths.push({
+              id: `raster-contour-fill-${paths.length + 1}`,
+              segments: [
+                { ...start, penDown: false },
+                { ...end, penDown: true }
+              ],
+              bounds: {
+                minX: Math.min(start.x, end.x),
+                maxX: Math.max(start.x, end.x),
+                minY: start.y,
+                maxY: start.y
+              }
+            });
+          }
+          runStart = null;
+        }
+      }
+    }
+  }
+
+  return paths;
+}
+
 function traceRasterCenterline(
   sourceBinary: Uint8Array,
   width: number,
@@ -140,7 +623,8 @@ function traceRasterCenterline(
   binary.set(sourceBinary);
 
   zhangSuenThin(binary, width, height);
-  return skeletonToPaths(binary, width, height, options);
+  const paths = skeletonToPaths(binary, width, height, options);
+  return paths.length > 0 ? paths : traceThinComponentsToPaths(sourceBinary, width, height, options);
 }
 
 // Zhang-Suen morphological thinning — reduces dark regions to 1-pixel-wide skeleton.
@@ -261,6 +745,14 @@ function buildSkeletonGraph(
   const edgeVisited = new Uint8Array(width * height);
 
   const traceEdge = (fromNi: number, sx: number, sy: number): void => {
+    // Two touching nodes are linked directly. Each sees the other as a neighbor, so
+    // skip the second direction; a duplicate edge would be drawn twice and would
+    // stop an end pixel from being recognised as an endpoint.
+    const directNi = nodeMap[sy * width + sx];
+    if (directNi !== -1 && nodes[fromNi].edgeIds.some((eid) => (
+      edges[eid].pixels.length === 2
+      && (edges[eid].nodeA === directNi || edges[eid].nodeB === directNi)
+    ))) return;
     if (edgeVisited[sy * width + sx]) return;
     const pixels: Array<{ x: number; y: number }> = [
       { x: nodes[fromNi].x, y: nodes[fromNi].y },
@@ -362,6 +854,7 @@ function skeletonToPaths(
 
   const paths: Path[] = [];
   const usedEdges = new Set<number>();
+  const autoSimplifyTolerance = 0.25;
 
   // At a branch point, pick the edge whose first step most closely continues
   // the current heading (maximise dot product). Falls back to any unused edge.
@@ -384,7 +877,8 @@ function skeletonToPaths(
 
   const emitPath = (pixels: Array<{ x: number; y: number }>) => {
     if (pixels.length < 2) return;
-    const segments = pixels.map((pt, i) => ({
+    const simplifiedPixels = simplifyDouglasPeucker(pixels, autoSimplifyTolerance);
+    const segments = simplifiedPixels.map((pt, i) => ({
       ...toCanvasPoint(pt.x, pt.y, width, height, fit),
       penDown: i > 0
     }));
@@ -417,7 +911,7 @@ function skeletonToPaths(
     let dirX = 0, dirY = 0;
     let curPixels: Array<{ x: number; y: number }> = [];
 
-    while (true) {
+    while (compSet.size > 0) {
       const eid = pickEdge(curNode, dirX, dirY, compSet);
 
       if (eid === -1) {
@@ -436,6 +930,7 @@ function skeletonToPaths(
       }
 
       usedEdges.add(eid);
+      compSet.delete(eid);
       const e = edges[eid];
       const reversed = e.nodeB === curNode && e.nodeA !== curNode;
       const px = reversed ? [...e.pixels].reverse() : e.pixels;
@@ -452,6 +947,9 @@ function skeletonToPaths(
       }
       curNode = reversed ? e.nodeA : e.nodeB;
     }
+    // The loop ends as soon as the last edge is used, so the stroke in progress
+    // still needs emitting; otherwise every component loses its final stroke.
+    emitPath(curPixels);
   }
 
   const sorted = sortPathsNearestNeighbor(paths);
@@ -461,7 +959,8 @@ function skeletonToPaths(
 // Greedy nearest-neighbor reordering: each next path is the one whose start
 // or end is closest to the current pen position, minimizing travel between strokes.
 function sortPathsNearestNeighbor(paths: Path[]): Path[] {
-  if (paths.length <= 1) return paths;
+  // A single path still gets oriented so it starts at the end nearest the origin.
+  if (paths.length === 0) return paths;
 
   const remaining = paths.slice();
   const sorted: Path[] = [];

@@ -24,8 +24,29 @@ import {
   loadActionSpeedSettings,
   saveActionSpeedSettings
 } from '../settings/actionSpeeds';
+import {
+  ArtworkKind,
+  RasterDetail,
+  RasterMode,
+  SavedCanvasObject,
+  SavedProjectData,
+  applyArtworkTransform,
+  inferImageMimeType,
+  isPhotoshopSignature,
+  isSavedProjectData,
+  transformLayersTogether,
+  withSavedAtNow
+} from '../artworkPlan';
 import ta4Profile from '../../../profiles/ta4.json';
 import { PreparedJob } from '../App';
+
+type IpcResult<T = unknown> = { ok: true; data?: T } | { ok: false; error: string };
+
+interface ProjectApi {
+  save: (projectData: unknown, filePath?: string) => Promise<IpcResult>;
+}
+
+type LoadedSavedProjectData = SavedProjectData & { filePath?: string };
 
 interface CanvasProps {
   units: LengthUnit;
@@ -41,17 +62,66 @@ const canvas: CanvasModel = {
   offsetX: 0,
   offsetY: 0
 };
-type RasterMode = 'outline' | 'fill' | 'centerline' | 'dither';
 type GridUnit = 'mm' | 'cm' | 'in';
+type RasterSource = {
+  image: CanvasImageSource;
+  width: number;
+  height: number;
+  cleanup: () => void;
+};
+type RasterTraceSettings = {
+  mode: RasterMode;
+  detail: RasterDetail;
+  threshold: number;
+  brightness: number;
+  contrast: number;
+  blurRadius: number;
+  adaptiveThreshold: boolean;
+  smoothingTolerance: number;
+  invertRaster: boolean;
+};
+
+type ArtworkTransformState = {
+  x: number;
+  y: number;
+  scale: number;
+  scaleY: number;
+  rotation: number;
+  flipX: boolean;
+  flipY: boolean;
+};
+
+type PlanInfo = {
+  projectId: string;
+  created: string;
+  filePath?: string;
+};
+
+type ArtworkLayer = {
+  id: string;
+  planKey: string;
+  name: string;
+  rawPaths: Path[];
+  artworkKind: ArtworkKind;
+  sourceFileName: string;
+  sourceMimeType: string;
+  sourceDataUrl: string;
+  rasterSettings: RasterTraceSettings;
+  transform: ArtworkTransformState;
+  visible: boolean;
+  previewColor?: string;
+  actionSpeeds: { travelSpeed: number; drawingSpeed: number; penSpeed: number };
+};
 
 const RASTER_MODE_HINTS: Record<RasterMode, string> = {
   outline: 'Traces the outer silhouette of dark regions. Best for line art, logos, and images with clear edges.',
   fill: 'Fills dark regions with horizontal scan lines. Good for solid shapes that need a hatched shading effect.',
   centerline: 'Finds the skeleton midline of strokes. Ideal for handwriting, technical drawings, and thin lines.',
   dither: 'Converts gray tones to dot patterns using ordered dithering. Best for photos and continuous-tone images.',
+  'contour-fill': 'Outlines each connected region fully, then fills it with horizontal lines before moving on. Ideal for type and letterforms.',
 };
 
-const RASTER_TRACE_SIZES = {
+const RASTER_TRACE_SIZES: Record<RasterDetail, number> = {
   draft: 320,
   normal: 512,
   fine: 1024,
@@ -59,16 +129,19 @@ const RASTER_TRACE_SIZES = {
   max: 2048
 };
 
-type RasterDetail = keyof typeof RASTER_TRACE_SIZES;
-
 const GRID_SPACING: Record<GridUnit, { minor: number; major: number }> = {
   mm: { minor: 5, major: 10 },
   cm: { minor: 10, major: 20 },
   in: { minor: 25.4 / 4, major: 25.4 }
 };
 
+const ACTIVE_LAYER_COLOR = '#1f7a4d';
+const INACTIVE_LAYER_COLORS = ['#a855f7', '#dc2626', '#0891b2', '#ea580c'];
+const INACTIVE_LAYER_OPACITY = 0.5;
+
 const ROTATE_HANDLE_DIST = 10; // mm from top edge to rotation handle
-const DEFAULT_ACTION_SPEEDS = defaultActionSpeedSettings(profile);
+const MAGNIFIER_ZOOM = 4; // how much the magnifier window enlarges the artwork
+const MAGNIFIER_WINDOW_WIDTH = 220; // px width of the picture-in-picture window
 type DragMode = 'move' | 'resize' | 'rotate';
 
 function displayLengthInput(valueMm: number, units: LengthUnit, precision: number = 4): number {
@@ -97,11 +170,15 @@ interface DragState {
   mode: DragMode;
   startPt: { x: number; y: number };
   startOffset: { x: number; y: number };
-  startScale: number;
+  startScaleX: number;
+  startScaleY: number;
   startRotation: number;
+  startFlipX: boolean;
+  startFlipY: boolean;
   startAngle: number; // radians from display center to startPt (used for rotate)
   rawBounds: BoundingBox;
   center: { x: number; y: number }; // raw image center
+  linkedStart?: ArtworkLayer[]; // every layer at drag start, when layers are linked
 }
 
 interface ActionSpeedSliderProps {
@@ -203,53 +280,6 @@ function computeAllBounds(paths: Path[]): BoundingBox {
   }), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
 }
 
-// Apply scale (around center), rotation, and translation to all path coordinates.
-// scalePct=100, rotateDeg=0, dx=0, dy=0 is the identity transform.
-function applyTransform(
-  paths: Path[],
-  cx: number,
-  cy: number,
-  scalePct: number,
-  dx: number,
-  dy: number,
-  rotateDeg: number
-): Path[] {
-  const s = scalePct / 100;
-  const rad = (rotateDeg * Math.PI) / 180;
-  const cosR = Math.cos(rad);
-  const sinR = Math.sin(rad);
-
-  const xformPt = (x: number, y: number) => ({
-    x: cx + dx + (x - cx) * s * cosR - (y - cy) * s * sinR,
-    y: cy + dy + (x - cx) * s * sinR + (y - cy) * s * cosR
-  });
-
-  return paths.map((path) => {
-    const segments = path.segments.map((seg) => ({ ...seg, ...xformPt(seg.x, seg.y) }));
-
-    // Tight AABB of the four rotated corners of the original bounding box
-    const corners = [
-      xformPt(path.bounds.minX, path.bounds.minY),
-      xformPt(path.bounds.maxX, path.bounds.minY),
-      xformPt(path.bounds.maxX, path.bounds.maxY),
-      xformPt(path.bounds.minX, path.bounds.maxY)
-    ];
-    const xs = corners.map((c) => c.x);
-    const ys = corners.map((c) => c.y);
-
-    return {
-      ...path,
-      segments,
-      bounds: {
-        minX: Math.min(...xs),
-        maxX: Math.max(...xs),
-        minY: Math.min(...ys),
-        maxY: Math.max(...ys)
-      }
-    };
-  });
-}
-
 interface ProgressStrokePoint {
   x: number;
   y: number;
@@ -303,14 +333,15 @@ function buildProgressStrokes(gcode: string[], origin: string): ProgressStroke[]
 }
 
 export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJobChange, jobProgress }) => {
+  const defaultActionSpeeds = defaultActionSpeedSettings(profile);
   const [initialActionSpeeds] = React.useState(() => loadActionSpeedSettings(
     getBrowserStorage(),
-    DEFAULT_ACTION_SPEEDS
+    defaultActionSpeeds
   ));
   const [message, setMessage] = React.useState('Import an SVG path file to prepare a TA4 plotting job.');
   const [error, setError] = React.useState<string | null>(null);
-  const [rasterMode, setRasterMode] = React.useState<RasterMode>('centerline');
-  const [rasterDetail, setRasterDetail] = React.useState<RasterDetail>('fine');
+  const [rasterMode, setRasterMode] = React.useState<RasterMode>('outline');
+  const [rasterDetail, setRasterDetail] = React.useState<RasterDetail>('draft');
   const [threshold, setThreshold] = React.useState(170);
   const [brightness, setBrightness] = React.useState(0);
   const [contrast, setContrast] = React.useState(100);
@@ -318,38 +349,139 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const [adaptiveThreshold, setAdaptiveThreshold] = React.useState(false);
   const [smoothingTolerance, setSmoothingTolerance] = React.useState(0);
   const [invertRaster, setInvertRaster] = React.useState(false);
-  const [travelSpeed, setTravelSpeed] = React.useState(initialActionSpeeds.travelSpeed);
-  const [drawingSpeed, setDrawingSpeed] = React.useState(initialActionSpeeds.drawingSpeed);
-  const [penSpeed, setPenSpeed] = React.useState(initialActionSpeeds.penSpeed);
+  const [travelSpeed, _setTravelSpeed] = React.useState(initialActionSpeeds.travelSpeed);
+  const [drawingSpeed, _setDrawingSpeed] = React.useState(initialActionSpeeds.drawingSpeed);
+  const [penSpeed, _setPenSpeed] = React.useState(initialActionSpeeds.penSpeed);
+  const travelSpeedRef = React.useRef(initialActionSpeeds.travelSpeed);
+  const drawingSpeedRef = React.useRef(initialActionSpeeds.drawingSpeed);
+  const penSpeedRef = React.useRef(initialActionSpeeds.penSpeed);
+  const setTravelSpeed = (v: number) => { travelSpeedRef.current = v; _setTravelSpeed(v); };
+  const setDrawingSpeed = (v: number) => { drawingSpeedRef.current = v; _setDrawingSpeed(v); };
+  const setPenSpeed = (v: number) => { penSpeedRef.current = v; _setPenSpeed(v); };
 
   const [showGrid, setShowGrid] = React.useState(true);
-  const [gridUnit, setGridUnit] = React.useState<GridUnit>('cm');
+  const [gridUnit, setGridUnit] = React.useState<GridUnit>('in');
+  const [lockAspectRatio, setLockAspectRatio] = React.useState(true);
+  const [linkLayers, setLinkLayers] = React.useState(true);
+  const [magnifierActive, setMagnifierActive] = React.useState(false);
+  const [magnifierPos, setMagnifierPos] = React.useState<{ x: number; y: number } | null>(null);
+  // Coalesce magnifier updates to one per animation frame so a fast pointer
+  // doesn't trigger a scene re-render on every mousemove event.
+  const magnifierRafRef = React.useRef<number | null>(null);
+  const magnifierPtRef = React.useRef<{ x: number; y: number } | null>(null);
+  const scheduleMagnifier = (pt: { x: number; y: number }) => {
+    magnifierPtRef.current = pt;
+    if (magnifierRafRef.current !== null) return;
+    magnifierRafRef.current = requestAnimationFrame(() => {
+      magnifierRafRef.current = null;
+      if (magnifierPtRef.current) setMagnifierPos(magnifierPtRef.current);
+    });
+  };
+  const clearMagnifierPos = () => {
+    if (magnifierRafRef.current !== null) {
+      cancelAnimationFrame(magnifierRafRef.current);
+      magnifierRafRef.current = null;
+    }
+    magnifierPtRef.current = null;
+    setMagnifierPos(null);
+  };
   const [isDragging, setIsDragging] = React.useState(false);
+  const [, _setLayers] = React.useState<ArtworkLayer[]>([]);
+  const layersRef = React.useRef<ArtworkLayer[]>([]);
+  const setLayers = (update: ArtworkLayer[] | ((current: ArtworkLayer[]) => ArtworkLayer[])) => {
+    const next = typeof update === 'function' ? update(layersRef.current) : update;
+    layersRef.current = next;
+    _setLayers(next);
+  };
+  const [activeLayerId, _setActiveLayerId] = React.useState<string | null>(null);
+  const activeLayerIdRef = React.useRef<string | null>(null);
+  const setActiveLayerId = (id: string | null) => {
+    activeLayerIdRef.current = id;
+    _setActiveLayerId(id);
+  };
 
   // rawPaths: paths normalized to canvas coordinates, before any user transform.
   const [rawPaths, _setRawPaths] = React.useState<Path[] | null>(null);
   const rawPathsRef = React.useRef<Path[] | null>(null);
-  const setRawPaths = (p: Path[] | null) => { rawPathsRef.current = p; _setRawPaths(p); };
+  const updateActiveLayer = (updater: (layer: ArtworkLayer) => ArtworkLayer) => {
+    const id = activeLayerIdRef.current;
+    if (!id) return;
+    setLayers((current) => current.map((layer) => layer.id === id ? updater(layer) : layer));
+  };
+  const setRawPaths = (p: Path[] | null) => {
+    rawPathsRef.current = p;
+    _setRawPaths(p);
+    if (p) updateActiveLayer((layer) => ({ ...layer, rawPaths: p }));
+  };
 
   // Transform state. Refs mirror state so pointer event handlers avoid stale closures.
   const [offsetX, _setOffsetX] = React.useState(0);
   const [offsetY, _setOffsetY] = React.useState(0);
-  const [imageScale, _setImageScale] = React.useState(100);
+  const [imageScaleX, _setImageScaleX] = React.useState(100);
+  const [imageScaleY, _setImageScaleY] = React.useState(100);
   const [rotation, _setRotation] = React.useState(0);
+  const [flipX, _setFlipX] = React.useState(false);
+  const [flipY, _setFlipY] = React.useState(false);
+  const [artworkKind, _setArtworkKind] = React.useState<ArtworkKind>('svg');
+  const [sourceFileName, _setSourceFileName] = React.useState('');
+  const [sourceMimeType, _setSourceMimeType] = React.useState('');
+  const [sourceDataUrl, _setSourceDataUrl] = React.useState('');
+  const artworkKindRef = React.useRef<ArtworkKind>('svg');
+  const sourceFileNameRef = React.useRef('');
+  const sourceMimeTypeRef = React.useRef('');
+  const sourceDataUrlRef = React.useRef('');
+  const setArtworkKind = (v: ArtworkKind) => { artworkKindRef.current = v; _setArtworkKind(v); };
+  const setSourceFileName = (v: string) => { sourceFileNameRef.current = v; _setSourceFileName(v); };
+  const setSourceMimeType = (v: string) => { sourceMimeTypeRef.current = v; _setSourceMimeType(v); };
+  const setSourceDataUrl = (v: string) => { sourceDataUrlRef.current = v; _setSourceDataUrl(v); };
+  // Each imported plan (or freshly imported artwork) keeps its own project
+  // identity so "Save plan" writes back only the active layer's plan.
+  const plansRef = React.useRef<Map<string, PlanInfo>>(new Map());
+  const planSeqRef = React.useRef(0);
+  const artworkSeqRef = React.useRef(0);
+  // Date.now keeps ids readable/sortable; the counter guarantees uniqueness for
+  // imports that land in the same millisecond.
+  const newArtworkId = () => `artwork-${Date.now()}-${++artworkSeqRef.current}`;
+  const registerPlan = (info: PlanInfo): string => {
+    const key = `plan-${++planSeqRef.current}`;
+    plansRef.current.set(key, info);
+    return key;
+  };
+  const newPlanKey = () => registerPlan({
+    projectId: `project-${Date.now()}`,
+    created: new Date().toISOString()
+  });
   const offsetXRef = React.useRef(0);
   const offsetYRef = React.useRef(0);
-  const imageScaleRef = React.useRef(100);
+  const imageScaleXRef = React.useRef(100);
+  const imageScaleYRef = React.useRef(100);
   const rotationRef = React.useRef(0);
-  const setOffsetX = (v: number) => { offsetXRef.current = v; _setOffsetX(v); };
-  const setOffsetY = (v: number) => { offsetYRef.current = v; _setOffsetY(v); };
-  const setImageScale = (v: number) => { imageScaleRef.current = v; _setImageScale(v); };
-  const setRotation = (v: number) => { rotationRef.current = v; _setRotation(v); };
+  const flipXRef = React.useRef(false);
+  const flipYRef = React.useRef(false);
+  const updateActiveTransform = (patch: Partial<ArtworkTransformState>) => {
+    updateActiveLayer((layer) => ({ ...layer, transform: { ...layer.transform, ...patch } }));
+  };
+  const setOffsetX = (v: number) => { offsetXRef.current = v; _setOffsetX(v); updateActiveTransform({ x: v }); };
+  const setOffsetY = (v: number) => { offsetYRef.current = v; _setOffsetY(v); updateActiveTransform({ y: v }); };
+  const setImageScaleX = (v: number) => { imageScaleXRef.current = v; _setImageScaleX(v); updateActiveTransform({ scale: v }); };
+  const setImageScaleY = (v: number) => { imageScaleYRef.current = v; _setImageScaleY(v); updateActiveTransform({ scaleY: v }); };
+  const setImageScale = (v: number) => {
+    setImageScaleX(v);
+    setImageScaleY(v);
+  };
+  const setRotation = (v: number) => { rotationRef.current = v; _setRotation(v); updateActiveTransform({ rotation: v }); };
+  const setFlipX = (v: boolean) => { flipXRef.current = v; _setFlipX(v); updateActiveTransform({ flipX: v }); };
+  const setFlipY = (v: boolean) => { flipYRef.current = v; _setFlipY(v); updateActiveTransform({ flipY: v }); };
 
   const jobNameRef = React.useRef('');
   React.useEffect(() => { jobNameRef.current = preparedJob?.name ?? ''; }, [preparedJob]);
 
   const svgRef = React.useRef<SVGSVGElement>(null);
+  const importPlanInputRef = React.useRef<HTMLInputElement>(null);
   const dragState = React.useRef<DragState | null>(null);
+  const rasterSourceFileRef = React.useRef<File | null>(null);
+  const layerRasterSourceFilesRef = React.useRef<Map<string, File>>(new Map());
+  const rasterReloadSeq = React.useRef(0);
 
   const progressStrokes = React.useMemo(
     () => preparedJob ? buildProgressStrokes(preparedJob.gcode, profile.origin) : [],
@@ -362,22 +494,100 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const rawBounds = rawPaths ? computeAllBounds(rawPaths) : null;
   const rawCenterX = rawBounds ? (rawBounds.minX + rawBounds.maxX) / 2 : canvas.width / 2;
   const rawCenterY = rawBounds ? (rawBounds.minY + rawBounds.maxY) / 2 : canvas.height / 2;
+  const rawWidth = rawBounds ? rawBounds.maxX - rawBounds.minX : 0;
+  const rawHeight = rawBounds ? rawBounds.maxY - rawBounds.minY : 0;
+  const imageWidth = rawWidth * imageScaleX / 100;
+  const imageHeight = rawHeight * imageScaleY / 100;
 
-  const s = imageScale / 100;
+  const sx = (imageScaleX / 100) * (flipX ? -1 : 1);
+  const sy = (imageScaleY / 100) * (flipY ? -1 : 1);
   const rad = (rotation * Math.PI) / 180;
   const cosR = Math.cos(rad);
   const sinR = Math.sin(rad);
 
   // Maps a point in raw image coordinates to its position in SVG display space
   const toDisplay = (x: number, y: number) => ({
-    x: rawCenterX + offsetX + (x - rawCenterX) * s * cosR - (y - rawCenterY) * s * sinR,
-    y: rawCenterY + offsetY + (x - rawCenterX) * s * sinR + (y - rawCenterY) * s * cosR
+    x: rawCenterX + offsetX + (x - rawCenterX) * sx * cosR - (y - rawCenterY) * sy * sinR,
+    y: rawCenterY + offsetY + (x - rawCenterX) * sx * sinR + (y - rawCenterY) * sy * cosR
   });
 
   // SVG transform for the image <g> — scale then rotate then translate, all around image center
   const imgGroupTransform = rawBounds
-    ? `translate(${rawCenterX + offsetX},${rawCenterY + offsetY}) rotate(${rotation}) scale(${s}) translate(${-rawCenterX},${-rawCenterY})`
+    ? `translate(${rawCenterX + offsetX},${rawCenterY + offsetY}) rotate(${rotation}) scale(${sx},${sy}) translate(${-rawCenterX},${-rawCenterY})`
     : '';
+
+  const layerGroupTransform = (layer: ArtworkLayer): string => {
+    const bounds = computeAllBounds(layer.rawPaths);
+    const cx = (bounds.minX + bounds.maxX) / 2;
+    const cy = (bounds.minY + bounds.maxY) / 2;
+    const layerSx = (layer.transform.scale / 100) * (layer.transform.flipX ? -1 : 1);
+    const layerSy = (layer.transform.scaleY / 100) * (layer.transform.flipY ? -1 : 1);
+    return `translate(${cx + layer.transform.x},${cy + layer.transform.y}) rotate(${layer.transform.rotation}) scale(${layerSx},${layerSy}) translate(${-cx},${-cy})`;
+  };
+
+  const snapshotActiveLayer = (): ArtworkLayer | null => {
+    const paths = rawPathsRef.current;
+    if (!activeLayerIdRef.current || !paths || !sourceDataUrlRef.current) return null;
+    const existingLayer = layersRef.current.find((layer) => layer.id === activeLayerIdRef.current);
+    return {
+      id: activeLayerIdRef.current,
+      planKey: existingLayer?.planKey ?? '',
+      name: sourceFileNameRef.current || jobNameRef.current || 'Untitled artwork',
+      rawPaths: paths,
+      artworkKind: artworkKindRef.current,
+      sourceFileName: sourceFileNameRef.current,
+      sourceMimeType: sourceMimeTypeRef.current,
+      sourceDataUrl: sourceDataUrlRef.current,
+      rasterSettings: getRasterSettings(),
+      transform: {
+        x: offsetXRef.current,
+        y: offsetYRef.current,
+        scale: imageScaleXRef.current,
+        scaleY: imageScaleYRef.current,
+        rotation: rotationRef.current,
+        flipX: flipXRef.current,
+        flipY: flipYRef.current
+      },
+      visible: existingLayer?.visible ?? true,
+      previewColor: existingLayer?.previewColor,
+      actionSpeeds: {
+        travelSpeed: travelSpeedRef.current,
+        drawingSpeed: drawingSpeedRef.current,
+        penSpeed: penSpeedRef.current
+      }
+    };
+  };
+
+  const mergedLayers = (): ArtworkLayer[] => {
+    const activeSnapshot = snapshotActiveLayer();
+    if (!activeSnapshot) return layersRef.current;
+    return layersRef.current.map((layer) => layer.id === activeSnapshot.id ? activeSnapshot : layer);
+  };
+
+  // Layers traced from one image (one per pen color) must keep their relative
+  // placement, so while layers are linked, moves and resizes apply to all of them.
+  const linkedLayersActive = () => linkLayers && layersRef.current.length > 1;
+
+  const applyLinkedChange = (
+    base: ArtworkLayer[],
+    change: { factor?: number; dx?: number; dy?: number; anchor?: { x: number; y: number } },
+    regenerate = true
+  ) => {
+    const next = transformLayersTogether(base, change);
+    const activeId = activeLayerIdRef.current;
+    setLayers((current) => current.map((layer) => {
+      const index = base.findIndex((b) => b.id === layer.id);
+      return index >= 0 && layer.id !== activeId ? { ...layer, transform: next[index] } : layer;
+    }));
+    const activeIndex = base.findIndex((layer) => layer.id === activeId);
+    if (activeIndex < 0) return;
+    const t = next[activeIndex];
+    setOffsetX(t.x);
+    setOffsetY(t.y);
+    setImageScaleX(t.scale);
+    setImageScaleY(t.scaleY);
+    if (regenerate) applyTransformAndRegenerate(t.scale, t.scaleY, t.x, t.y, rotationRef.current);
+  };
 
   // Four corners of the bounding box in display coordinates (for the selection polygon)
   const displayCorners = rawBounds ? [
@@ -390,8 +600,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   // Rotation handle: arm extends from top-center of the rotated bounding box
   const topCenter = rawBounds ? toDisplay(rawCenterX, rawBounds.minY) : null;
   const rotateHandle = topCenter ? {
-    x: topCenter.x - ROTATE_HANDLE_DIST * sinR,
-    y: topCenter.y - ROTATE_HANDLE_DIST * cosR
+    x: topCenter.x + (flipX ? 1 : -1) * ROTATE_HANDLE_DIST * sinR,
+    y: topCenter.y - (flipY ? 1 : -1) * ROTATE_HANDLE_DIST * cosR
   } : null;
 
   // --- Utilities ---
@@ -406,30 +616,192 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     };
   };
 
+  const buildJobFromLayer = (layer: ArtworkLayer): PreparedJob => {
+    const bounds = computeAllBounds(layer.rawPaths);
+    const transformed = applyArtworkTransform(
+      layer.rawPaths,
+      (bounds.minX + bounds.maxX) / 2,
+      (bounds.minY + bounds.maxY) / 2,
+      layer.transform.scale,
+      layer.transform.scaleY,
+      layer.transform.x,
+      layer.transform.y,
+      layer.transform.rotation,
+      layer.transform.flipX,
+      layer.transform.flipY
+    );
+    const generator = new GCodeGenerator(profile, canvas, layer.actionSpeeds);
+    const result = generator.generate(transformed);
+    return { name: layer.name, paths: transformed, gcode: result.gcode, warnings: result.warnings };
+  };
+
+  // Keeps the Machine tab in sync with layer visibility: exactly one shown
+  // layer becomes the runnable job; several shown layers block execution.
+  const syncMachineJob = (precomputedActiveJob?: PreparedJob) => {
+    const allLayers = layersRef.current;
+    const activeId = activeLayerIdRef.current;
+    const activeEntry = allLayers.find((layer) => layer.id === activeId);
+    const activeVisible = activeEntry ? activeEntry.visible && activeEntry.rawPaths.length > 0 : Boolean(precomputedActiveJob);
+    const visibleOthers = allLayers.filter((layer) => (
+      layer.id !== activeId && layer.visible && layer.rawPaths.length > 0
+    ));
+    const visibleCount = visibleOthers.length + (activeVisible ? 1 : 0);
+
+    if (visibleCount > 1) {
+      onPreparedJobChange({
+        name: `${visibleCount} layers shown`,
+        paths: [],
+        gcode: [],
+        warnings: [],
+        runBlockedReason: 'Only one layer can be shown to run a job. Hide the other layers on the Artwork tab.'
+      });
+      return;
+    }
+    if (activeVisible) {
+      const activeJob = precomputedActiveJob
+        ?? (() => {
+          const snapshot = snapshotActiveLayer() ?? activeEntry;
+          return snapshot ? buildJobFromLayer(snapshot) : null;
+        })();
+      onPreparedJobChange(activeJob);
+      return;
+    }
+    if (visibleOthers.length === 1) {
+      onPreparedJobChange(buildJobFromLayer(visibleOthers[0]));
+      return;
+    }
+    onPreparedJobChange(null);
+  };
+
   const regenerateJob = (
     paths: Path[],
     name: string,
     cx: number,
     cy: number,
-    scalePct: number,
+    scaleXPct: number,
+    scaleYPct: number,
     dx: number,
     dy: number,
-    rotateDeg: number
+    rotateDeg: number,
+    nextFlipX: boolean = flipXRef.current,
+    nextFlipY: boolean = flipYRef.current
   ) => {
-    const transformed = applyTransform(paths, cx, cy, scalePct, dx, dy, rotateDeg);
-    const generator = new GCodeGenerator(profile, canvas, { travelSpeed, drawingSpeed, penSpeed });
+    const transformed = applyArtworkTransform(paths, cx, cy, scaleXPct, scaleYPct, dx, dy, rotateDeg, nextFlipX, nextFlipY);
+    const generator = new GCodeGenerator(profile, canvas, { travelSpeed: travelSpeedRef.current, drawingSpeed: drawingSpeedRef.current, penSpeed: penSpeedRef.current });
     const result = generator.generate(transformed);
-    onPreparedJobChange({ name, paths: transformed, gcode: result.gcode, warnings: result.warnings });
+    syncMachineJob({ name, paths: transformed, gcode: result.gcode, warnings: result.warnings });
     setMessage(`${name}: ${transformed.length} stroke${transformed.length === 1 ? '' : 's'}, ${result.gcode.length} G-code lines.`);
   };
 
-  const applyTransformAndRegenerate = (scalePct: number, dx: number, dy: number, rotateDeg: number) => {
+  const applyTransformAndRegenerate = (
+    scaleXPct: number,
+    scaleYPct: number,
+    dx: number,
+    dy: number,
+    rotateDeg: number,
+    nextFlipX: boolean = flipXRef.current,
+    nextFlipY: boolean = flipYRef.current
+  ) => {
     const paths = rawPathsRef.current;
     if (!paths) return;
     const bounds = computeAllBounds(paths);
     const cx = (bounds.minX + bounds.maxX) / 2;
     const cy = (bounds.minY + bounds.maxY) / 2;
-    regenerateJob(paths, jobNameRef.current, cx, cy, scalePct, dx, dy, rotateDeg);
+    regenerateJob(paths, jobNameRef.current, cx, cy, scaleXPct, scaleYPct, dx, dy, rotateDeg, nextFlipX, nextFlipY);
+  };
+
+  const getRasterSettings = (): RasterTraceSettings => ({
+    mode: rasterMode,
+    detail: rasterDetail,
+    threshold,
+    brightness,
+    contrast,
+    blurRadius,
+    adaptiveThreshold,
+    smoothingTolerance,
+    invertRaster
+  });
+
+  const dataUrlToFile = async (dataUrl: string, name: string, mimeType: string): Promise<File> => {
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    return new File([blob], name || 'raster-artwork', { type: mimeType || blob.type || 'application/octet-stream' });
+  };
+
+  const getReloadableRasterFile = async (): Promise<File | null> => {
+    if (rasterSourceFileRef.current) return rasterSourceFileRef.current;
+    const activeId = activeLayerIdRef.current;
+    if (activeId) {
+      const layerFile = layerRasterSourceFilesRef.current.get(activeId);
+      if (layerFile) {
+        rasterSourceFileRef.current = layerFile;
+        return layerFile;
+      }
+    }
+    if (!sourceDataUrl || artworkKind !== 'raster') return null;
+    const file = await dataUrlToFile(sourceDataUrl, sourceFileName, sourceMimeType);
+    if (activeLayerIdRef.current === activeId) {
+      rasterSourceFileRef.current = file;
+    }
+    if (activeId) layerRasterSourceFilesRef.current.set(activeId, file);
+    return file;
+  };
+
+  const reloadRasterArtwork = async (settings: RasterTraceSettings) => {
+    if (artworkKind !== 'raster') return;
+    const reloadId = ++rasterReloadSeq.current;
+    setError(null);
+    try {
+      const file = await getReloadableRasterFile();
+      if (!file || reloadId !== rasterReloadSeq.current) return;
+
+      const paths = await prepareRasterPaths(file, settings);
+      if (reloadId !== rasterReloadSeq.current) return;
+      if (paths.length === 0) {
+        throw new Error('No drawable paths were found.');
+      }
+
+      setRawPaths(paths);
+      const bounds = computeAllBounds(paths);
+      const scaleX = imageScaleXRef.current;
+      const scaleY = imageScaleYRef.current;
+      const dx = offsetXRef.current;
+      const dy = offsetYRef.current;
+      const rotateDeg = rotationRef.current;
+      const nextFlipX = flipXRef.current;
+      const nextFlipY = flipYRef.current;
+      regenerateJob(
+        paths,
+        jobNameRef.current || sourceFileName || file.name,
+        (bounds.minX + bounds.maxX) / 2,
+        (bounds.minY + bounds.maxY) / 2,
+        scaleX,
+        scaleY,
+        dx,
+        dy,
+        rotateDeg,
+        nextFlipX,
+        nextFlipY
+      );
+    } catch (caught) {
+      if (reloadId !== rasterReloadSeq.current) return;
+      setError(caught instanceof Error ? caught.message : String(caught));
+      setMessage('Raster trace update failed.');
+    }
+  };
+
+  const updateRasterSettings = (settings: RasterTraceSettings) => {
+    setRasterMode(settings.mode);
+    setRasterDetail(settings.detail);
+    setThreshold(settings.threshold);
+    setBrightness(settings.brightness);
+    setContrast(settings.contrast);
+    setBlurRadius(settings.blurRadius);
+    setAdaptiveThreshold(settings.adaptiveThreshold);
+    setSmoothingTolerance(settings.smoothingTolerance);
+    setInvertRaster(settings.invertRaster);
+    updateActiveLayer((layer) => ({ ...layer, rasterSettings: settings }));
+    void reloadRasterArtwork(settings);
   };
 
   // --- Pointer event handlers ---
@@ -442,11 +814,15 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       mode: 'move',
       startPt: pt,
       startOffset: { x: offsetXRef.current, y: offsetYRef.current },
-      startScale: imageScaleRef.current,
+      startScaleX: imageScaleXRef.current,
+      startScaleY: imageScaleYRef.current,
       startRotation: rotationRef.current,
+      startFlipX: flipXRef.current,
+      startFlipY: flipYRef.current,
       startAngle: 0,
       rawBounds: bounds,
-      center: { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 }
+      center: { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 },
+      linkedStart: linkedLayersActive() ? mergedLayers() : undefined
     };
     setIsDragging(true);
     svgRef.current?.setPointerCapture(e.pointerId);
@@ -463,11 +839,15 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       mode: 'resize',
       startPt: pt,
       startOffset: { x: offsetXRef.current, y: offsetYRef.current },
-      startScale: imageScaleRef.current,
+      startScaleX: imageScaleXRef.current,
+      startScaleY: imageScaleYRef.current,
       startRotation: rotationRef.current,
+      startFlipX: flipXRef.current,
+      startFlipY: flipYRef.current,
       startAngle: 0,
       rawBounds: bounds,
-      center: { x: cx, y: cy }
+      center: { x: cx, y: cy },
+      linkedStart: linkedLayersActive() ? mergedLayers() : undefined
     };
     setIsDragging(true);
     svgRef.current?.setPointerCapture(e.pointerId);
@@ -486,8 +866,11 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       mode: 'rotate',
       startPt: pt,
       startOffset: { x: offsetXRef.current, y: offsetYRef.current },
-      startScale: imageScaleRef.current,
+      startScaleX: imageScaleXRef.current,
+      startScaleY: imageScaleYRef.current,
       startRotation: rotationRef.current,
+      startFlipX: flipXRef.current,
+      startFlipY: flipYRef.current,
       startAngle: Math.atan2(pt.y - displayCy, pt.x - displayCx),
       rawBounds: bounds,
       center: { x: cx, y: cy }
@@ -498,6 +881,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   };
 
   const handleSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (magnifierActive) scheduleMagnifier(getSvgPt(e));
+
     const state = dragState.current;
     if (!state) return;
 
@@ -509,19 +894,22 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     } else if (state.mode === 'resize') {
       const displayCx = state.center.x + state.startOffset.x;
       const displayCy = state.center.y + state.startOffset.y;
-      const s0 = state.startScale / 100;
+      const sx0 = (state.startScaleX / 100) * (state.startFlipX ? -1 : 1);
+      const sy0 = (state.startScaleY / 100) * (state.startFlipY ? -1 : 1);
       const rad0 = (state.startRotation * Math.PI) / 180;
       const cosR0 = Math.cos(rad0);
       const sinR0 = Math.sin(rad0);
       // Bottom-right corner of raw bounds in display space at drag start
-      const lx = (state.rawBounds.maxX - state.center.x) * s0;
-      const ly = (state.rawBounds.maxY - state.center.y) * s0;
+      const lx = (state.rawBounds.maxX - state.center.x) * sx0;
+      const ly = (state.rawBounds.maxY - state.center.y) * sy0;
       const initCornerX = displayCx + lx * cosR0 - ly * sinR0;
       const initCornerY = displayCy + lx * sinR0 + ly * cosR0;
       const initDist = Math.hypot(initCornerX - displayCx, initCornerY - displayCy);
       const currDist = Math.hypot(pt.x - displayCx, pt.y - displayCy);
       if (initDist > 0.5) {
-        setImageScale(Math.max(5, Math.min(500, Math.round(state.startScale * currDist / initDist))));
+        const ratio = currDist / initDist;
+        setImageScaleX(Math.max(5, Math.min(500, Math.round(state.startScaleX * ratio))));
+        setImageScaleY(Math.max(5, Math.min(500, Math.round(state.startScaleY * ratio))));
       }
     } else {
       // rotate: delta angle from drag-start to current mouse, relative to display center
@@ -531,13 +919,24 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       const angleDeltaDeg = (currentAngle - state.startAngle) * (180 / Math.PI);
       setRotation(state.startRotation + angleDeltaDeg);
     }
+
+    if (state.linkedStart && state.mode !== 'rotate') {
+      // The active layer has already been updated above; bring the other layers along.
+      // A resize handle scales around the active layer's on-screen center.
+      applyLinkedChange(state.linkedStart, {
+        factor: imageScaleXRef.current / state.startScaleX,
+        dx: state.mode === 'move' ? offsetXRef.current - state.startOffset.x : 0,
+        dy: state.mode === 'move' ? offsetYRef.current - state.startOffset.y : 0,
+        anchor: { x: state.center.x + state.startOffset.x, y: state.center.y + state.startOffset.y }
+      }, false);
+    }
   };
 
   const handleSvgPointerUp = () => {
     if (!dragState.current) return;
     dragState.current = null;
     setIsDragging(false);
-    applyTransformAndRegenerate(imageScaleRef.current, offsetXRef.current, offsetYRef.current, rotationRef.current);
+    applyTransformAndRegenerate(imageScaleXRef.current, imageScaleYRef.current, offsetXRef.current, offsetYRef.current, rotationRef.current);
   };
 
   // --- Manual control handlers ---
@@ -545,19 +944,83 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
   const handleOffsetChange = (axis: 'x' | 'y', value: number) => {
     const dx = axis === 'x' ? value : offsetXRef.current;
     const dy = axis === 'y' ? value : offsetYRef.current;
+    if (linkedLayersActive()) {
+      applyLinkedChange(mergedLayers(), { dx: dx - offsetXRef.current, dy: dy - offsetYRef.current });
+      return;
+    }
     setOffsetX(dx);
     setOffsetY(dy);
-    applyTransformAndRegenerate(imageScaleRef.current, dx, dy, rotationRef.current);
+    applyTransformAndRegenerate(imageScaleXRef.current, imageScaleYRef.current, dx, dy, rotationRef.current);
   };
 
   const handleScaleChange = (newScale: number) => {
+    if (linkedLayersActive() && imageScaleXRef.current > 0) {
+      applyLinkedChange(mergedLayers(), { factor: newScale / imageScaleXRef.current });
+      return;
+    }
     setImageScale(newScale);
-    applyTransformAndRegenerate(newScale, offsetXRef.current, offsetYRef.current, rotationRef.current);
+    applyTransformAndRegenerate(newScale, newScale, offsetXRef.current, offsetYRef.current, rotationRef.current);
+  };
+
+  const handleDimensionChange = (axis: 'width' | 'height', valueMm: number) => {
+    if (!rawBounds || !Number.isFinite(valueMm) || valueMm <= 0) return;
+    const clamp = (scale: number) => Math.max(5, Math.min(500, scale));
+    const raw = axis === 'width' ? rawWidth : rawHeight;
+    if (raw <= 0) return;
+
+    const currentScale = axis === 'width' ? imageScaleXRef.current : imageScaleYRef.current;
+    const targetScale = (valueMm / raw) * 100;
+
+    let nextScaleX: number;
+    let nextScaleY: number;
+    if (lockAspectRatio) {
+      // Scale both axes by a single factor so the ratio is preserved, but clamp
+      // the factor itself so neither axis can leave the [5, 500] range — clamping
+      // the axes independently would distort the image at the boundary.
+      const desiredFactor = targetScale / currentScale;
+      const minFactor = Math.max(5 / imageScaleXRef.current, 5 / imageScaleYRef.current);
+      const maxFactor = Math.min(500 / imageScaleXRef.current, 500 / imageScaleYRef.current);
+      const factor = Math.min(maxFactor, Math.max(minFactor, desiredFactor));
+      nextScaleX = imageScaleXRef.current * factor;
+      nextScaleY = imageScaleYRef.current * factor;
+    } else {
+      nextScaleX = axis === 'width' ? clamp(targetScale) : imageScaleXRef.current;
+      nextScaleY = axis === 'width' ? imageScaleYRef.current : clamp(targetScale);
+    }
+
+    if (linkedLayersActive()) {
+      // Linked layers always resize uniformly, which is what keeps them aligned.
+      const factor = axis === 'width'
+        ? nextScaleX / imageScaleXRef.current
+        : nextScaleY / imageScaleYRef.current;
+      applyLinkedChange(mergedLayers(), { factor });
+      return;
+    }
+
+    setImageScaleX(nextScaleX);
+    setImageScaleY(nextScaleY);
+    applyTransformAndRegenerate(nextScaleX, nextScaleY, offsetXRef.current, offsetYRef.current, rotationRef.current);
   };
 
   const handleRotationChange = (newRotation: number) => {
     setRotation(newRotation);
-    applyTransformAndRegenerate(imageScaleRef.current, offsetXRef.current, offsetYRef.current, newRotation);
+    applyTransformAndRegenerate(imageScaleXRef.current, imageScaleYRef.current, offsetXRef.current, offsetYRef.current, newRotation);
+  };
+
+  const handleFlipChange = (axis: 'x' | 'y') => {
+    const nextFlipX = axis === 'x' ? !flipXRef.current : flipXRef.current;
+    const nextFlipY = axis === 'y' ? !flipYRef.current : flipYRef.current;
+    setFlipX(nextFlipX);
+    setFlipY(nextFlipY);
+    applyTransformAndRegenerate(
+      imageScaleXRef.current,
+      imageScaleYRef.current,
+      offsetXRef.current,
+      offsetYRef.current,
+      rotationRef.current,
+      nextFlipX,
+      nextFlipY
+    );
   };
 
   const handleResetTransform = () => {
@@ -565,7 +1028,9 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     setOffsetY(0);
     setImageScale(100);
     setRotation(0);
-    applyTransformAndRegenerate(100, 0, 0, 0);
+    setFlipX(false);
+    setFlipY(false);
+    applyTransformAndRegenerate(100, 100, 0, 0, 0, false, false);
   };
 
   const handleSpeedChange = (kind: 'travel' | 'drawing' | 'pen', value: number) => {
@@ -585,59 +1050,447 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
       drawingSpeed,
       penSpeed
     });
-    applyTransformAndRegenerate(imageScaleRef.current, offsetXRef.current, offsetYRef.current, rotationRef.current);
+    applyTransformAndRegenerate(imageScaleXRef.current, imageScaleYRef.current, offsetXRef.current, offsetYRef.current, rotationRef.current);
   }, [travelSpeed, drawingSpeed, penSpeed]);
 
   const handleResetSpeeds = () => {
-    setTravelSpeed(DEFAULT_ACTION_SPEEDS.travelSpeed);
-    setDrawingSpeed(DEFAULT_ACTION_SPEEDS.drawingSpeed);
-    setPenSpeed(DEFAULT_ACTION_SPEEDS.penSpeed);
+    setTravelSpeed(defaultActionSpeeds.travelSpeed);
+    setDrawingSpeed(defaultActionSpeeds.drawingSpeed);
+    setPenSpeed(defaultActionSpeeds.penSpeed);
+  };
+
+  const fileToDataUrl = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error('Could not read artwork file.'));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const hydrateActiveLayer = (layer: ArtworkLayer) => {
+    setActiveLayerId(layer.id);
+    rawPathsRef.current = layer.rawPaths;
+    _setRawPaths(layer.rawPaths);
+    offsetXRef.current = layer.transform.x;
+    offsetYRef.current = layer.transform.y;
+    imageScaleXRef.current = layer.transform.scale;
+    imageScaleYRef.current = layer.transform.scaleY;
+    rotationRef.current = layer.transform.rotation;
+    flipXRef.current = layer.transform.flipX;
+    flipYRef.current = layer.transform.flipY;
+    _setOffsetX(layer.transform.x);
+    _setOffsetY(layer.transform.y);
+    _setImageScaleX(layer.transform.scale);
+    _setImageScaleY(layer.transform.scaleY);
+    _setRotation(layer.transform.rotation);
+    _setFlipX(layer.transform.flipX);
+    _setFlipY(layer.transform.flipY);
+    setArtworkKind(layer.artworkKind);
+    setSourceFileName(layer.sourceFileName);
+    setSourceMimeType(layer.sourceMimeType);
+    setSourceDataUrl(layer.sourceDataUrl);
+    setRasterMode(layer.rasterSettings.mode);
+    setRasterDetail(layer.rasterSettings.detail);
+    setThreshold(layer.rasterSettings.threshold);
+    setBrightness(layer.rasterSettings.brightness);
+    setContrast(layer.rasterSettings.contrast);
+    setBlurRadius(layer.rasterSettings.blurRadius);
+    setAdaptiveThreshold(layer.rasterSettings.adaptiveThreshold);
+    setSmoothingTolerance(layer.rasterSettings.smoothingTolerance);
+    setInvertRaster(layer.rasterSettings.invertRaster);
+    rasterSourceFileRef.current = layerRasterSourceFilesRef.current.get(layer.id) ?? null;
+    setTravelSpeed(layer.actionSpeeds.travelSpeed);
+    setDrawingSpeed(layer.actionSpeeds.drawingSpeed);
+    setPenSpeed(layer.actionSpeeds.penSpeed);
+
+    const bounds = computeAllBounds(layer.rawPaths);
+    regenerateJob(
+      layer.rawPaths,
+      layer.name,
+      (bounds.minX + bounds.maxX) / 2,
+      (bounds.minY + bounds.maxY) / 2,
+      layer.transform.scale,
+      layer.transform.scaleY,
+      layer.transform.x,
+      layer.transform.y,
+      layer.transform.rotation,
+      layer.transform.flipX,
+      layer.transform.flipY
+    );
+  };
+
+  const handleSelectLayer = (id: string) => {
+    const nextLayers = mergedLayers();
+    setLayers(nextLayers);
+    const layer = nextLayers.find((candidate) => candidate.id === id);
+    if (layer) hydrateActiveLayer(layer);
+  };
+
+  const toggleLayerVisibility = (id: string) => {
+    setLayers((current) => current.map((layer) => (
+      layer.id === id ? { ...layer, visible: !layer.visible } : layer
+    )));
+    syncMachineJob();
+    const visibleLayers = layersRef.current.filter((layer) => layer.visible && layer.rawPaths.length > 0);
+    if (visibleLayers.length > 1) {
+      setMessage(`${visibleLayers.length} layers shown — show exactly one to run it on the machine.`);
+    } else if (visibleLayers.length === 1) {
+      setMessage(`${visibleLayers[0].name} is loaded on the Machine tab.`);
+    } else {
+      setMessage('No layers shown. Show one layer to prepare a machine job.');
+    }
+  };
+
+  const setLayerPreviewColor = (id: string, previewColor: string) => {
+    setLayers((current) => current.map((layer) => (
+      layer.id === id ? { ...layer, previewColor } : layer
+    )));
+  };
+
+  const savedObjectFromLayer = (layer: ArtworkLayer): SavedCanvasObject => ({
+    id: layer.id,
+    type: layer.artworkKind === 'svg' ? 'svg_path' : 'raster_image',
+    source: layer.sourceDataUrl,
+    transform: {
+      x: layer.transform.x,
+      y: layer.transform.y,
+      scale: layer.transform.scale,
+      scaleY: layer.transform.scaleY,
+      rotation: layer.transform.rotation,
+      flipX: layer.transform.flipX,
+      flipY: layer.transform.flipY
+    },
+    visible: layer.visible,
+    previewColor: layer.previewColor,
+    paths: layer.rawPaths,
+    metadata: {
+      formatVersion: 1,
+      artworkKind: layer.artworkKind,
+      fileName: layer.sourceFileName || layer.name,
+      mimeType: layer.sourceMimeType,
+      sourceDataUrl: layer.sourceDataUrl,
+      rasterSettings: layer.rasterSettings,
+      actionSpeeds: layer.actionSpeeds
+    }
+  });
+
+  // Saves only the active layer's plan: its layers, project identity, and file path.
+  const buildSavedProject = (): { project: SavedProjectData; planKey: string; filePath?: string } | null => {
+    const allLayers = mergedLayers();
+    const activeLayer = allLayers.find((layer) => layer.id === activeLayerIdRef.current) ?? allLayers[0];
+    if (!activeLayer) return null;
+
+    const planKey = activeLayer.planKey;
+    const planLayers = allLayers.filter((layer) => layer.planKey === planKey);
+    const plan = plansRef.current.get(planKey) ?? {
+      projectId: `project-${Date.now()}`,
+      created: new Date().toISOString()
+    };
+    const name = activeLayer.name || jobNameRef.current || sourceFileName || 'Untitled artwork';
+
+    return {
+      planKey,
+      filePath: plan.filePath,
+      project: withSavedAtNow({
+        id: plan.projectId,
+        name,
+        created: plan.created,
+        machineProfileId: profile.id,
+        units,
+        canvas,
+        objects: planLayers.map(savedObjectFromLayer),
+        activeObjectId: activeLayer.id
+      })
+    };
+  };
+
+  const handleSaveProject = async () => {
+    setError(null);
+    const built = buildSavedProject();
+    if (!built) {
+      setError('Load artwork before saving a plan.');
+      return;
+    }
+
+    const api = (window as unknown as { api?: { project?: ProjectApi } }).api?.project;
+    if (!api) {
+      setError('Project saving is only available in the desktop app.');
+      return;
+    }
+
+    const result = await api.save(built.project, built.filePath);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+
+    const saved = result.data as LoadedSavedProjectData | undefined;
+    if (saved?.filePath) {
+      const plan = plansRef.current.get(built.planKey);
+      plansRef.current.set(built.planKey, {
+        projectId: plan?.projectId ?? built.project.id,
+        created: plan?.created ?? built.project.created,
+        filePath: saved.filePath
+      });
+    }
+    setMessage(saved?.filePath
+      ? `Saved plan "${built.project.name}" to: ${saved.filePath}.`
+      : `Saved plan "${built.project.name}" to your Downloads folder.`);
+  };
+
+  const applyLoadedProject = (project: LoadedSavedProjectData, importedFileName: string) => {
+    const objects = project.objects ?? [];
+    const validObjects = objects.filter((object) => Array.isArray(object.paths) && object.paths.length > 0);
+    if (validObjects.length === 0) {
+      throw new Error('Plan file has no artwork objects.');
+    }
+
+    // Importing a plan while layers exist overlays the new plan on top of the
+    // current one instead of replacing it; ids are remapped to stay unique.
+    const existingLayers = mergedLayers();
+    const merging = existingLayers.length > 0;
+    if (!merging) plansRef.current.clear();
+    const planKey = registerPlan({
+      projectId: project.id || `project-${Date.now()}`,
+      created: project.created || new Date().toISOString(),
+      filePath: project.filePath
+    });
+
+    const loadedLayers: ArtworkLayer[] = validObjects.map((object, index) => {
+      const metadata = object.metadata;
+      return {
+        id: object.id || `artwork-${index + 1}`,
+        planKey,
+        name: metadata?.fileName || object.id || `Artwork ${index + 1}`,
+        rawPaths: object.paths,
+        artworkKind: metadata?.artworkKind ?? (object.type === 'raster_image' ? 'raster' : 'svg'),
+        sourceFileName: metadata?.fileName ?? project.name,
+        sourceMimeType: metadata?.mimeType ?? '',
+        sourceDataUrl: metadata?.sourceDataUrl ?? object.source ?? '',
+        rasterSettings: metadata?.rasterSettings ?? {
+          mode: 'outline',
+          detail: 'draft',
+          threshold: 170,
+          brightness: 0,
+          contrast: 100,
+          blurRadius: 0,
+          adaptiveThreshold: false,
+          smoothingTolerance: 0,
+          invertRaster: false
+        },
+        transform: {
+          x: Number(object.transform?.x ?? 0),
+          y: Number(object.transform?.y ?? 0),
+          scale: Number(object.transform?.scale ?? 100),
+          scaleY: Number(object.transform?.scaleY ?? object.transform?.scale ?? 100),
+          rotation: Number(object.transform?.rotation ?? 0),
+          flipX: Boolean(object.transform?.flipX),
+          flipY: Boolean(object.transform?.flipY)
+        },
+        visible: object.visible !== false,
+        previewColor: typeof object.previewColor === 'string' ? object.previewColor : undefined,
+        actionSpeeds: metadata?.actionSpeeds ?? {
+          travelSpeed,
+          drawingSpeed,
+          penSpeed
+        }
+      };
+    });
+    const activeIndex = Math.max(0, loadedLayers.findIndex((layer) => layer.id === project.activeObjectId));
+
+    let layersToAdd = loadedLayers;
+    if (merging) {
+      const usedIds = new Set(existingLayers.map((layer) => layer.id));
+      layersToAdd = loadedLayers.map((layer) => {
+        let nextId = layer.id;
+        let suffix = 2;
+        while (usedIds.has(nextId)) nextId = `${layer.id}-${suffix++}`;
+        usedIds.add(nextId);
+        return nextId === layer.id ? layer : { ...layer, id: nextId };
+      });
+      setLayers([...existingLayers, ...layersToAdd]);
+    } else {
+      layerRasterSourceFilesRef.current.clear();
+      setLayers(layersToAdd);
+    }
+    const activeLayer = layersToAdd[activeIndex];
+    hydrateActiveLayer(activeLayer);
+
+    console.info('[Artwork] loaded plan', {
+      name: project.name,
+      importedFileName,
+      merged: merging,
+      layers: layersToAdd.length,
+      activeObjectId: activeLayer.id
+    });
+  };
+
+  const parseSavedProjectFile = async (file: File): Promise<LoadedSavedProjectData | null> => {
+    let contents: string;
+    try {
+      contents = await file.text();
+    } catch (caught) {
+      const reason = caught instanceof Error ? caught.message : String(caught);
+      throw new Error(`Could not read plan file: ${reason}`);
+    }
+
+    try {
+      const parsed = JSON.parse(contents);
+      if (!isSavedProjectData(parsed)) return null;
+      const parsedRecord = parsed as LoadedSavedProjectData;
+      const parsedFilePath = typeof parsedRecord.filePath === 'string' && parsedRecord.filePath !== ''
+        ? parsedRecord.filePath
+        : undefined;
+      const inputFilePath = typeof (file as File & { path?: unknown }).path === 'string'
+        ? (file as File & { path: string }).path
+        : undefined;
+      return { ...parsed, filePath: parsedFilePath ?? inputFilePath };
+    } catch (caught) {
+      if (caught instanceof SyntaxError) return null;
+      throw caught;
+    }
+  };
+
+  const loadProjectFile = async (file: File): Promise<boolean> => {
+    const project = await parseSavedProjectFile(file);
+    if (!project) {
+      return false;
+    }
+    applyLoadedProject(project, file.name);
+    return true;
+  };
+
+  const handleLoadProject = async (file: File | undefined) => {
+    await handleOpenFile(file);
+  };
+
+  const shouldLoadAsProject = (file: File): boolean => {
+    const lowerName = file.name.toLowerCase();
+    return lowerName.endsWith('.boc.json') || lowerName.endsWith('.json') || file.type === 'application/json';
+  };
+
+  const handleOpenFile = async (file: File | undefined) => {
+    if (!file) return;
+    const startedAt = performance.now();
+    const isProjectCandidate = shouldLoadAsProject(file);
+    console.info('[Artwork] open file', {
+      name: file.name,
+      type: file.type || '(empty)',
+      size: file.size,
+      route: isProjectCandidate ? 'plan' : 'artwork'
+    });
+
+    if (isProjectCandidate) {
+      try {
+        setError(null);
+        const loaded = await loadProjectFile(file);
+        if (!loaded) throw new Error('Plan file must contain a saved Bachin Open Controller project.');
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : String(caught));
+        setMessage('Plan load failed.');
+      }
+      console.info('[Artwork] open complete', {
+        name: file.name,
+        route: 'plan',
+        durationMs: Math.round(performance.now() - startedAt)
+      });
+      return;
+    }
+
+    await importArtwork(file);
+    console.info('[Artwork] open complete', {
+      name: file.name,
+      route: 'artwork',
+      durationMs: Math.round(performance.now() - startedAt)
+    });
   };
 
   // --- Import and clear ---
 
   const handleClear = () => {
+    rasterReloadSeq.current += 1;
+    rasterSourceFileRef.current = null;
+    layerRasterSourceFilesRef.current.clear();
+    setLayers([]);
+    setActiveLayerId(null);
     setRawPaths(null);
     setOffsetX(0);
     setOffsetY(0);
     setImageScale(100);
     setRotation(0);
+    setFlipX(false);
+    setFlipY(false);
+    setSourceFileName('');
+    setSourceMimeType('');
+    setSourceDataUrl('');
+    plansRef.current.clear();
     onPreparedJobChange(null);
     setMessage('Import an SVG path file to prepare a TA4 plotting job.');
     setError(null);
   };
 
-  const importSvg = async (file: File | undefined) => {
+  const importArtwork = async (file: File | undefined) => {
     if (!file) return;
+    rasterReloadSeq.current += 1;
+    rasterSourceFileRef.current = null;
     setError(null);
 
     try {
       const isSvg = file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
-      const paths = isSvg ? await prepareSvgPaths(file) : await prepareRasterPaths(file);
+      const dataUrl = await fileToDataUrl(file);
+      const paths = isSvg ? await prepareSvgPaths(file) : await prepareRasterPaths(file, getRasterSettings());
       if (paths.length === 0) {
         throw new Error('No drawable paths were found.');
       }
 
-      setRawPaths(paths);
-      setOffsetX(0);
-      setOffsetY(0);
-      setImageScale(100);
-      setRotation(0);
-
-      const generator = new GCodeGenerator(profile, canvas, { travelSpeed, drawingSpeed, penSpeed });
-      const result = generator.generate(paths);
-      onPreparedJobChange({
+      // New artwork joins the active layer's plan; with nothing loaded it starts a new plan.
+      const activePlanKey = activeLayerIdRef.current
+        ? layersRef.current.find((layer) => layer.id === activeLayerIdRef.current)?.planKey
+        : undefined;
+      const id = newArtworkId();
+      const nextLayer: ArtworkLayer = {
+        id,
+        planKey: activePlanKey ?? newPlanKey(),
         name: file.name,
-        paths,
-        gcode: result.gcode,
-        warnings: result.warnings
+        rawPaths: paths,
+        artworkKind: isSvg ? 'svg' : 'raster',
+        sourceFileName: file.name,
+        sourceMimeType: inferImageMimeType(file),
+        sourceDataUrl: dataUrl,
+        rasterSettings: getRasterSettings(),
+        transform: {
+          x: 0,
+          y: 0,
+          scale: 100,
+          scaleY: 100,
+          rotation: 0,
+          flipX: false,
+          flipY: false
+        },
+        visible: true,
+        actionSpeeds: {
+          travelSpeed: travelSpeedRef.current,
+          drawingSpeed: drawingSpeedRef.current,
+          penSpeed: penSpeedRef.current
+        }
+      };
+      const nextLayers = activeLayerIdRef.current ? [...mergedLayers(), nextLayer] : [nextLayer];
+      setLayers(nextLayers);
+      if (!isSvg) layerRasterSourceFilesRef.current.set(id, file);
+      hydrateActiveLayer(nextLayer);
+
+      console.info('[Artwork] imported artwork', {
+        name: file.name,
+        kind: isSvg ? 'svg' : 'raster',
+        paths: paths.length
       });
-      setMessage(`Prepared ${file.name}: ${paths.length} stroke${paths.length === 1 ? '' : 's'}, ${result.gcode.length} G-code lines.`);
     } catch (caught) {
       setRawPaths(null);
+      rasterSourceFileRef.current = null;
       onPreparedJobChange(null);
       setError(caught instanceof Error ? caught.message : String(caught));
-      setMessage('SVG import failed.');
+      setMessage('Artwork import failed.');
     }
   };
 
@@ -648,12 +1501,22 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
     return normalizePaths(rawParsedPaths);
   };
 
-  const prepareRasterPaths = async (file: File): Promise<Path[]> => {
-    const image = await loadImage(file);
-    const maxTraceSize = RASTER_TRACE_SIZES[rasterDetail];
-    const scale = Math.min(1, maxTraceSize / Math.max(image.naturalWidth, image.naturalHeight));
-    const width = Math.max(1, Math.round(image.naturalWidth * scale));
-    const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const prepareRasterPaths = async (file: File, settings: RasterTraceSettings): Promise<Path[]> => {
+    const startedAt = performance.now();
+    const image = await loadRasterSource(file);
+    const decodedAt = performance.now();
+    console.info('[Artwork] decoded raster', {
+      name: file.name,
+      width: image.width,
+      height: image.height,
+      detail: settings.detail,
+      mode: settings.mode,
+      durationMs: Math.round(decodedAt - startedAt)
+    });
+    const maxTraceSize = RASTER_TRACE_SIZES[settings.detail];
+    const scale = Math.min(1, maxTraceSize / Math.max(image.width, image.height));
+    const width = Math.max(1, Math.round(image.width * scale));
+    const height = Math.max(1, Math.round(image.height * scale));
     const scratch = document.createElement('canvas');
     scratch.width = width;
     scratch.height = height;
@@ -664,38 +1527,89 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
     context.fillStyle = '#fff';
     context.fillRect(0, 0, width, height);
-    context.drawImage(image, 0, 0, width, height);
+    context.drawImage(image.image, 0, 0, width, height);
     const imageData = context.getImageData(0, 0, width, height);
-    if (invertRaster) {
+    if (settings.invertRaster) {
       invertImageData(imageData.data);
     }
-    const objectUrl = image.src;
-    image.removeAttribute('src');
-    URL.revokeObjectURL(objectUrl);
+    image.cleanup();
 
     const traced = traceRasterToPaths(imageData.data, width, height, {
-      mode: rasterMode,
-      threshold,
+      mode: settings.mode,
+      threshold: settings.threshold,
       xStep: 1,
-      yStep: rasterDetail === 'fine' || rasterDetail === 'ultra' || rasterDetail === 'max' || rasterMode === 'dither' ? 1 : 2,
+      yStep: settings.detail === 'fine' || settings.detail === 'ultra' || settings.detail === 'max' || settings.mode === 'dither' ? 1 : 2,
       minRunLength: 2,
-      blurRadius,
-      brightness,
-      contrast,
-      adaptiveThreshold,
+      blurRadius: settings.blurRadius,
+      brightness: settings.brightness,
+      contrast: settings.contrast,
+      adaptiveThreshold: settings.adaptiveThreshold,
       canvasWidth: canvas.width,
       canvasHeight: canvas.height
     });
 
-    return smoothPaths(traced, smoothingTolerance);
+    const smoothed = smoothPaths(traced, settings.smoothingTolerance);
+    console.info('[Artwork] traced raster', {
+      name: file.name,
+      traceWidth: width,
+      traceHeight: height,
+      paths: smoothed.length,
+      durationMs: Math.round(performance.now() - decodedAt)
+    });
+    return smoothed;
   };
 
-  const loadImage = (file: File): Promise<HTMLImageElement> => {
+  const loadRasterSource = async (file: File): Promise<RasterSource> => {
+    const arrayBuffer = await file.arrayBuffer();
+    if (isPhotoshopSignature(arrayBuffer)) {
+      console.info('[Artwork] rejected PSD signature', { name: file.name });
+      throw new Error(`${file.name} is a Photoshop PSD file renamed as .png. Export it as a real PNG or JPEG first.`);
+    }
+
+    const blob = new Blob([arrayBuffer], { type: inferImageMimeType(file) });
+
+    if ('createImageBitmap' in window) {
+      try {
+        const bitmap = await createImageBitmap(blob);
+        console.info('[Artwork] decoded with createImageBitmap', {
+          name: file.name,
+          width: bitmap.width,
+          height: bitmap.height
+        });
+        return {
+          image: bitmap,
+          width: bitmap.width,
+          height: bitmap.height,
+          cleanup: () => bitmap.close()
+        };
+      } catch {
+        // Fall through to the HTMLImageElement decoder below.
+      }
+    }
+
+    return loadHtmlImage(file, blob);
+  };
+
+  const loadHtmlImage = (file: File, blob: Blob): Promise<RasterSource> => {
     return new Promise((resolve, reject) => {
       const image = new Image();
-      image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error('Could not load image file.'));
-      image.src = URL.createObjectURL(file);
+      const objectUrl = URL.createObjectURL(blob);
+      const cleanup = () => {
+        image.removeAttribute('src');
+        URL.revokeObjectURL(objectUrl);
+      };
+      image.onload = () => resolve({
+        image,
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+        cleanup
+      });
+      image.onerror = () => {
+        cleanup();
+        console.info('[Artwork] image element decode failed', { name: file.name });
+        reject(new Error(`Could not load ${file.name}. Use a PNG, JPEG, or SVG image.`));
+      };
+      image.src = objectUrl;
     });
   };
 
@@ -709,18 +1623,134 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
 
   const dragMode = dragState.current?.mode;
   const unitLabel = UNIT_LABELS[units];
+  const previewLayers = mergedLayers();
+  const inactivePreviewLayers = previewLayers.filter((layer) => (
+    layer.visible && layer.id !== activeLayerId && layer.rawPaths.length > 0
+  ));
+  const layerStrokeColor = (layer: ArtworkLayer): string => {
+    if (layer.previewColor) return layer.previewColor;
+    if (layer.id === activeLayerId) return ACTIVE_LAYER_COLOR;
+    const inactiveIndex = inactivePreviewLayers.findIndex((candidate) => candidate.id === layer.id);
+    return INACTIVE_LAYER_COLORS[Math.max(0, inactiveIndex) % INACTIVE_LAYER_COLORS.length];
+  };
+  const activePreviewLayer = previewLayers.find((layer) => layer.id === activeLayerId);
+  const activeStrokeColor = activePreviewLayer ? layerStrokeColor(activePreviewLayer) : ACTIVE_LAYER_COLOR;
+
+  // Renders the grid + artwork layers shared by the main preview and the
+  // magnifier window. Pattern ids are suffixed so the two SVGs don't collide.
+  const renderPreviewScene = (idSuffix: string, interactive: boolean) => {
+    const minorId = `gridMinor-${idSuffix}`;
+    const majorId = `gridMajor-${idSuffix}`;
+    return (
+      <>
+        <defs>
+          {showGrid && (() => {
+            const { minor, major } = GRID_SPACING[gridUnit];
+            return (
+              <>
+                <pattern id={minorId} width={minor} height={minor} patternUnits="userSpaceOnUse">
+                  <path d={`M ${minor} 0 L 0 0 0 ${minor}`} fill="none" stroke="var(--canvas-grid-minor)" strokeWidth="0.25" />
+                </pattern>
+                <pattern id={majorId} width={major} height={major} patternUnits="userSpaceOnUse">
+                  <rect width={major} height={major} fill={`url(#${minorId})`} />
+                  <path d={`M ${major} 0 L 0 0 0 ${major}`} fill="none" stroke="var(--canvas-grid-major)" strokeWidth="0.4" />
+                </pattern>
+              </>
+            );
+          })()}
+        </defs>
+
+        {/* Work area background */}
+        <rect x="0" y="0" width={canvas.width} height={canvas.height} fill="var(--canvas-paper)" stroke="var(--canvas-border)" strokeWidth="0.5" />
+
+        {/* Grid overlay */}
+        {showGrid && (
+          <rect x="0" y="0" width={canvas.width} height={canvas.height} fill={`url(#${majorId})`} style={{ pointerEvents: 'none' }} />
+        )}
+
+        {!isPrinting && inactivePreviewLayers.map((layer) => (
+          <g
+            key={layer.id}
+            transform={layerGroupTransform(layer)}
+            opacity={INACTIVE_LAYER_OPACITY}
+            style={{ pointerEvents: 'none' }}
+          >
+            {layer.rawPaths.map((path) => (
+              <polyline
+                key={`${layer.id}-${path.id}`}
+                points={pathToPoints(path)}
+                fill="none"
+                stroke={layerStrokeColor(layer)}
+                strokeWidth="1"
+                vectorEffect="non-scaling-stroke"
+              />
+            ))}
+          </g>
+        ))}
+
+        {rawPaths && !isPrinting && (
+          <g
+            transform={imgGroupTransform}
+            style={interactive
+              ? { cursor: isDragging && dragMode === 'move' ? 'grabbing' : 'grab' }
+              : { pointerEvents: 'none' }}
+            onPointerDown={interactive ? handleMovePointerDown : undefined}
+          >
+            {rawPaths.map((path) => (
+              <polyline
+                key={path.id}
+                points={pathToPoints(path)}
+                fill="none"
+                stroke={activeStrokeColor}
+                strokeWidth="1.2"
+                vectorEffect="non-scaling-stroke"
+              />
+            ))}
+          </g>
+        )}
+      </>
+    );
+  };
 
   return (
     <div className="canvas-page">
       <h2>Canvas Preview</h2>
       <section className="canvas-toolbar">
-        <label htmlFor="svg-import">Artwork file</label>
+        <label htmlFor="open-file">Open file</label>
         <input
-          id="svg-import"
+          id="open-file"
           type="file"
-          accept=".svg,.png,.jpg,.jpeg,image/svg+xml,image/png,image/jpeg"
-          onChange={(event) => importSvg(event.target.files?.[0])}
+          accept=".boc.json,.json,.svg,.png,.jpg,.jpeg,application/json,image/svg+xml,image/png,image/jpeg"
+          onChange={(event) => {
+            void handleOpenFile(event.target.files?.[0]);
+            event.target.value = '';
+          }}
         />
+        <input
+          ref={importPlanInputRef}
+          className="visually-hidden-file"
+          type="file"
+          accept=".boc.json,.json,application/json"
+          onChange={(event) => {
+            void handleLoadProject(event.target.files?.[0]);
+            event.target.value = '';
+          }}
+        />
+        <button
+          type="button"
+          className="toolbar-btn"
+          disabled={!rawPaths}
+          onClick={handleSaveProject}
+        >
+          Save plan
+        </button>
+        <button
+          type="button"
+          className="toolbar-btn"
+          onClick={() => importPlanInputRef.current?.click()}
+        >
+          Import plan
+        </button>
         <button
           type="button"
           className={`toolbar-btn${showGrid ? ' active' : ''}`}
@@ -739,6 +1769,18 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
             <option value="in">in</option>
           </select>
         )}
+        <button
+          type="button"
+          className={`toolbar-btn${magnifierActive ? ' active' : ''}`}
+          aria-pressed={magnifierActive}
+          title="Magnifier — hover the artwork to see a zoomed view"
+          onClick={() => {
+            setMagnifierActive((active) => !active);
+            clearMagnifierPos();
+          }}
+        >
+          🔍 Magnify
+        </button>
         {rawPaths && (
           <button type="button" className="toolbar-btn" onClick={handleResetTransform}>
             Reset
@@ -751,16 +1793,64 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
         )}
       </section>
 
+      {previewLayers.length > 0 && (
+        <section className="artwork-layer-list" aria-label="Artwork layers">
+          {previewLayers.map((layer, index) => (
+            <div key={layer.id} className={`artwork-layer-row${layer.id === activeLayerId ? ' active' : ''}`}>
+              <button
+                type="button"
+                className="layer-active-btn"
+                aria-pressed={layer.id === activeLayerId}
+                onClick={() => handleSelectLayer(layer.id)}
+              >
+                <span className="layer-index">{index + 1}</span>
+                <span className="layer-name">{layer.name}</span>
+              </button>
+              <input
+                type="color"
+                className="layer-color-input"
+                aria-label={`Preview color for ${layer.name}`}
+                title="Preview color"
+                value={layerStrokeColor(layer)}
+                onChange={(event) => setLayerPreviewColor(layer.id, event.target.value)}
+              />
+              <button
+                type="button"
+                className={`toolbar-btn layer-visibility-btn${layer.visible ? ' active' : ''}`}
+                aria-pressed={layer.visible}
+                onClick={() => toggleLayerVisibility(layer.id)}
+              >
+                {layer.visible ? 'Shown' : 'Hidden'}
+              </button>
+            </div>
+          ))}
+        </section>
+      )}
+
+      <div className="canvas-message-banner" role="status" aria-live="polite">
+        <p className="status-message">{message}</p>
+        {error && <p className="error-message">{error}</p>}
+      </div>
+
       <section className="raster-settings" aria-label="Raster trace settings">
         <label htmlFor="raster-mode">Raster mode</label>
-        <select id="raster-mode" value={rasterMode} onChange={(event) => setRasterMode(event.target.value as RasterMode)}>
+        <select
+          id="raster-mode"
+          value={rasterMode}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), mode: event.target.value as RasterMode })}
+        >
           <option value="outline">Outline</option>
           <option value="fill">Fill lines</option>
           <option value="centerline">Centerline</option>
           <option value="dither">Dither</option>
+          <option value="contour-fill">Contour fill</option>
         </select>
         <label htmlFor="raster-detail">Detail</label>
-        <select id="raster-detail" value={rasterDetail} onChange={(event) => setRasterDetail(event.target.value as RasterDetail)}>
+        <select
+          id="raster-detail"
+          value={rasterDetail}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), detail: event.target.value as RasterDetail })}
+        >
           <option value="draft">Draft 320px</option>
           <option value="normal">Normal 512px</option>
           <option value="fine">Fine 1024px</option>
@@ -774,7 +1864,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           min="40"
           max="240"
           value={threshold}
-          onChange={(event) => setThreshold(Number(event.target.value))}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), threshold: Number(event.target.value) })}
         />
         <span>{threshold}</span>
         <label htmlFor="raster-brightness">Brightness</label>
@@ -784,7 +1874,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           min="-100"
           max="100"
           value={brightness}
-          onChange={(event) => setBrightness(Number(event.target.value))}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), brightness: Number(event.target.value) })}
         />
         <span>{brightness}</span>
         <label htmlFor="raster-contrast">Contrast</label>
@@ -794,7 +1884,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           min="0"
           max="250"
           value={contrast}
-          onChange={(event) => setContrast(Number(event.target.value))}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), contrast: Number(event.target.value) })}
         />
         <span>{contrast}%</span>
         <label htmlFor="raster-blur">Blur</label>
@@ -805,7 +1895,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           max="6"
           step="0.25"
           value={blurRadius}
-          onChange={(event) => setBlurRadius(Number(event.target.value))}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), blurRadius: Number(event.target.value) })}
         />
         <span>{blurRadius.toFixed(2)}</span>
         <label htmlFor="raster-smoothing">Smooth</label>
@@ -816,15 +1906,23 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           max="2"
           step="0.05"
           value={smoothingTolerance}
-          onChange={(event) => setSmoothingTolerance(Number(event.target.value))}
+          onChange={(event) => updateRasterSettings({ ...getRasterSettings(), smoothingTolerance: Number(event.target.value) })}
         />
         <span>{smoothingTolerance.toFixed(2)}</span>
         <label className="check-row">
-          <input type="checkbox" checked={adaptiveThreshold} onChange={(event) => setAdaptiveThreshold(event.target.checked)} />
+          <input
+            type="checkbox"
+            checked={adaptiveThreshold}
+            onChange={(event) => updateRasterSettings({ ...getRasterSettings(), adaptiveThreshold: event.target.checked })}
+          />
           Adaptive
         </label>
         <label className="check-row">
-          <input type="checkbox" checked={invertRaster} onChange={(event) => setInvertRaster(event.target.checked)} />
+          <input
+            type="checkbox"
+            checked={invertRaster}
+            onChange={(event) => updateRasterSettings({ ...getRasterSettings(), invertRaster: event.target.checked })}
+          />
           Invert
         </label>
         <span className="raster-settings-hint">{RASTER_MODE_HINTS[rasterMode]}</span>
@@ -835,7 +1933,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           id="travel-speed"
           label="Travel"
           valueMm={travelSpeed}
-          optimalMm={DEFAULT_ACTION_SPEEDS.travelSpeed}
+          optimalMm={defaultActionSpeeds.travelSpeed}
           units={units}
           onChange={(valueMm) => handleSpeedChange('travel', valueMm)}
         />
@@ -843,7 +1941,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           id="drawing-speed"
           label="Draw"
           valueMm={drawingSpeed}
-          optimalMm={DEFAULT_ACTION_SPEEDS.drawingSpeed}
+          optimalMm={defaultActionSpeeds.drawingSpeed}
           units={units}
           onChange={(valueMm) => handleSpeedChange('drawing', valueMm)}
         />
@@ -851,7 +1949,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           id="pen-speed"
           label="Pen Z"
           valueMm={penSpeed}
-          optimalMm={DEFAULT_ACTION_SPEEDS.penSpeed}
+          optimalMm={defaultActionSpeeds.penSpeed}
           units={units}
           onChange={(valueMm) => handleSpeedChange('pen', valueMm)}
         />
@@ -861,61 +1959,21 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
         </button>
       </section>
 
-      <div className="work-area-preview svg-preview" aria-label="TA4 work area preview">
+      <div className="work-area-preview svg-preview" aria-label="TA4 work area preview" style={{ position: 'relative' }}>
         <svg
           ref={svgRef}
           viewBox={`0 0 ${canvas.width} ${canvas.height}`}
           role="img"
           aria-label="Imported SVG preview"
-          style={{ userSelect: 'none', display: 'block', width: '100%', height: '100%' }}
+          style={{ userSelect: 'none', display: 'block', width: '100%', height: '100%', cursor: magnifierActive ? 'crosshair' : undefined }}
           onPointerMove={handleSvgPointerMove}
           onPointerUp={handleSvgPointerUp}
+          onPointerLeave={clearMagnifierPos}
         >
-          <defs>
-            {showGrid && (() => {
-              const { minor, major } = GRID_SPACING[gridUnit];
-              return (
-                <>
-                  <pattern id="gridMinor" width={minor} height={minor} patternUnits="userSpaceOnUse">
-                    <path d={`M ${minor} 0 L 0 0 0 ${minor}`} fill="none" stroke="var(--canvas-grid-minor)" strokeWidth="0.25" />
-                  </pattern>
-                  <pattern id="gridMajor" width={major} height={major} patternUnits="userSpaceOnUse">
-                    <rect width={major} height={major} fill="url(#gridMinor)" />
-                    <path d={`M ${major} 0 L 0 0 0 ${major}`} fill="none" stroke="var(--canvas-grid-major)" strokeWidth="0.4" />
-                  </pattern>
-                </>
-              );
-            })()}
-          </defs>
-
-          {/* Work area background */}
-          <rect x="0" y="0" width={canvas.width} height={canvas.height} fill="var(--canvas-paper)" stroke="var(--canvas-border)" strokeWidth="0.5" />
-
-          {/* Grid overlay */}
-          {showGrid && (
-            <rect x="0" y="0" width={canvas.width} height={canvas.height} fill="url(#gridMajor)" style={{ pointerEvents: 'none' }} />
-          )}
+          {renderPreviewScene('main', true)}
 
           {rawPaths && !isPrinting && (
             <>
-              {/* Draggable, rotatable, scalable image group */}
-              <g
-                transform={imgGroupTransform}
-                style={{ cursor: isDragging && dragMode === 'move' ? 'grabbing' : 'grab' }}
-                onPointerDown={handleMovePointerDown}
-              >
-                {rawPaths.map((path) => (
-                  <polyline
-                    key={path.id}
-                    points={pathToPoints(path)}
-                    fill="none"
-                    stroke="var(--success)"
-                    strokeWidth="1.2"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                ))}
-              </g>
-
               {/* Selection polygon — follows rotation */}
               {displayCorners && (
                 <polygon
@@ -1020,6 +2078,44 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
             );
           })()}
         </svg>
+
+        {/* Magnifier: a picture-in-picture window that enlarges the area under the cursor */}
+        {magnifierActive && magnifierPos && (() => {
+          const aspect = canvas.height / canvas.width;
+          const winW = MAGNIFIER_WINDOW_WIDTH;
+          const winH = Math.round(winW * aspect);
+          const regionW = canvas.width / MAGNIFIER_ZOOM;
+          const regionH = canvas.height / MAGNIFIER_ZOOM;
+          const vx = Math.max(0, Math.min(canvas.width - regionW, magnifierPos.x - regionW / 2));
+          const vy = Math.max(0, Math.min(canvas.height - regionH, magnifierPos.y - regionH / 2));
+          return (
+            <div
+              className="magnifier-pip"
+              style={{
+                position: 'absolute',
+                top: 8,
+                right: 8,
+                width: winW,
+                height: winH,
+                border: '2px solid #2563eb',
+                borderRadius: 8,
+                overflow: 'hidden',
+                background: '#fff',
+                boxShadow: '0 2px 10px rgba(0,0,0,0.25)',
+                pointerEvents: 'none'
+              }}
+            >
+              <svg
+                viewBox={`${vx} ${vy} ${regionW} ${regionH}`}
+                width="100%"
+                height="100%"
+                style={{ display: 'block' }}
+              >
+                {renderPreviewScene('magnifier', false)}
+              </svg>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Image transform controls — shown only when an image is loaded */}
@@ -1045,13 +2141,57 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           />
           <span className="unit-label">{unitLabel}</span>
 
+          <label htmlFor="img-width">W</label>
+          <input
+            id="img-width"
+            type="number"
+            min={displayLengthInput(0.1, units)}
+            step={displayLengthInput(units === 'in' ? 0.254 : 1, units)}
+            value={displayLengthInput(imageWidth, units)}
+            onChange={(e) => handleDimensionChange('width', toMillimeters(Number(e.target.value), units))}
+          />
+          <span className="unit-label">{unitLabel}</span>
+
+          <label htmlFor="img-height">H</label>
+          <input
+            id="img-height"
+            type="number"
+            min={displayLengthInput(0.1, units)}
+            step={displayLengthInput(units === 'in' ? 0.254 : 1, units)}
+            value={displayLengthInput(imageHeight, units)}
+            onChange={(e) => handleDimensionChange('height', toMillimeters(Number(e.target.value), units))}
+          />
+          <span className="unit-label">{unitLabel}</span>
+
+          <button
+            type="button"
+            className={`toolbar-btn transform-btn${lockAspectRatio ? ' active' : ''}`}
+            aria-pressed={lockAspectRatio}
+            title="Keep width and height proportional when resizing"
+            onClick={() => setLockAspectRatio(!lockAspectRatio)}
+          >
+            {lockAspectRatio ? 'Lock ratio' : 'Free ratio'}
+          </button>
+
+          {layersRef.current.length > 1 && (
+            <button
+              type="button"
+              className={`toolbar-btn transform-btn${linkLayers ? ' active' : ''}`}
+              aria-pressed={linkLayers}
+              title="Move and resize all layers together so pen colors stay aligned"
+              onClick={() => setLinkLayers(!linkLayers)}
+            >
+              {linkLayers ? 'Layers linked' : 'Layers unlinked'}
+            </button>
+          )}
+
           <label htmlFor="img-scale-range">Scale</label>
           <input
             id="img-scale-range"
             type="range"
             min="5"
             max="200"
-            value={Math.min(200, imageScale)}
+            value={Math.min(200, Math.round((imageScaleX + imageScaleY) / 2))}
             onChange={(e) => handleScaleChange(Number(e.target.value))}
           />
           <input
@@ -1060,7 +2200,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
             min="5"
             max="500"
             step="1"
-            value={imageScale}
+            value={Math.round((imageScaleX + imageScaleY) / 2)}
             onChange={(e) => handleScaleChange(Math.max(5, Math.min(500, Number(e.target.value))))}
           />
           <span className="unit-label">%</span>
@@ -1074,6 +2214,23 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
             onChange={(e) => handleRotationChange(Number(e.target.value))}
           />
           <span className="unit-label">°</span>
+
+          <button
+            type="button"
+            className={`toolbar-btn transform-btn${flipX ? ' active' : ''}`}
+            aria-pressed={flipX}
+            onClick={() => handleFlipChange('x')}
+          >
+            Flip H
+          </button>
+          <button
+            type="button"
+            className={`toolbar-btn transform-btn${flipY ? ' active' : ''}`}
+            aria-pressed={flipY}
+            onClick={() => handleFlipChange('y')}
+          >
+            Flip V
+          </button>
         </section>
       )}
 
@@ -1095,7 +2252,6 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           <dd>{preparedJob ? preparedJob.paths.length : 0}</dd>
         </div>
       </dl>
-      <p className="status-message">{message}</p>
       {preparedJob && preparedJob.warnings.length > 0 && (
         <ul className="warning-list">
           {preparedJob.warnings.map((warning, index) => (
@@ -1105,7 +2261,6 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
           ))}
         </ul>
       )}
-      {error && <p className="error-message">{error}</p>}
     </div>
   );
 };

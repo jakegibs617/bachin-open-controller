@@ -17,6 +17,14 @@
 
 import { Path, MachineProfile, Canvas, JobWarning } from '../../types';
 export { validateGCodeJob, validateGCodeLine } from './validation';
+export {
+  generateSpeedTestGCode,
+  TWO_INCH_MM,
+  MIN_TEST_SPEED,
+  DEFAULT_SPEED_TEST_BOUNDARY_MM,
+  DEFAULT_SPEED_TEST_TURNS
+} from './speedTest';
+export type { SpeedTestOptions, SpeedTestPlan } from './speedTest';
 
 function formatCoordinate(value: number): string {
   return Number(value.toFixed(3)).toString();
@@ -36,7 +44,7 @@ function resolveSpeed(value: number | undefined, fallback: number): number {
   return fallback;
 }
 
-function feedFromCommand(command: string): number | null {
+export function feedFromCommand(command: string): number | null {
   const match = command.match(/\bF(-?\d+(?:\.\d+)?)\b/i);
   if (!match) {
     return null;

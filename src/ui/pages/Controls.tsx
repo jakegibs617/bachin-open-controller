@@ -35,6 +35,7 @@ interface ElectronApi {
     returnToOrigin: () => Promise<IpcResult<string[]>>;
     jog: (dx: number, dy: number) => Promise<IpcResult<string[]>>;
     perimeterTest: (width: number, height: number) => Promise<IpcResult>;
+    speedTest: (speeds: number[], boundaryMm?: number, turns?: number) => Promise<IpcResult>;
     sendJob: (gcode: string[]) => Promise<IpcResult>;
     pause: () => Promise<IpcResult>;
     resume: () => Promise<IpcResult>;
@@ -89,6 +90,9 @@ export const Controls: React.FC<ControlsProps> = ({
   const [jogOffset, setJogOffset] = React.useState({ x: 0, y: 0 });
   const [perimeterWidth, setPerimeterWidth] = React.useState(20);
   const [perimeterHeight, setPerimeterHeight] = React.useState(20);
+  const [speedTestSpeeds, setSpeedTestSpeeds] = React.useState('1200, 1600, 2000');
+  const [speedTestBoundary, setSpeedTestBoundary] = React.useState(45.72); // 1.8 in, under the 2 in cap
+  const [speedTestTurns, setSpeedTestTurns] = React.useState(3.5);
   const [message, setMessage] = React.useState('Connect to a GRBL controller to enable pen control.');
   const [error, setError] = React.useState<string | null>(null);
   const streamStartRef = React.useRef<number | null>(null);
@@ -104,9 +108,12 @@ export const Controls: React.FC<ControlsProps> = ({
 
   const apiAvailable = Boolean(window.api?.serial);
   const jobHasOutOfBoundsWarning = hasOutOfBoundsWarning(preparedJob);
-  const jobRunDisabledReason = jobHasOutOfBoundsWarning
-    ? 'Cannot run artwork job: generated coordinates exceed the machine work area. Adjust placement, scale, or rotation before running hardware.'
-    : busy ? 'Wait for the current command to finish.' : '';
+  const jobRunBlockedReason = preparedJob?.runBlockedReason ?? '';
+  const jobRunDisabledReason = jobRunBlockedReason
+    ? jobRunBlockedReason
+    : jobHasOutOfBoundsWarning
+      ? 'Cannot run artwork job: generated coordinates exceed the machine work area. Adjust placement, scale, or rotation before running hardware.'
+      : busy ? 'Wait for the current command to finish.' : '';
   const unitLabel = UNIT_LABELS[units];
 
   const runAction = async (action: () => Promise<IpcResult>, successMessage: string): Promise<boolean> => {
@@ -135,7 +142,12 @@ export const Controls: React.FC<ControlsProps> = ({
       if (!result.ok) { setError(result.error); return; }
       const nextPorts = result.data ?? [];
       setPorts(nextPorts);
-      setSelectedPort((current) => current || nextPorts[0]?.path || '');
+      setSelectedPort((current) => {
+        if (current && nextPorts.some((port) => port.path === current)) {
+          return current;
+        }
+        return nextPorts[0]?.path || '';
+      });
       setMessage(nextPorts.length > 0 ? 'Select a port, then connect.' : 'No serial ports found.');
     } finally {
       setBusy(false);
@@ -147,6 +159,11 @@ export const Controls: React.FC<ControlsProps> = ({
   }, [apiAvailable, refreshPorts]);
 
   const connect = async () => {
+    if (!selectedPort) {
+      setError('Select a serial port before connecting.');
+      return;
+    }
+
     const ok = await runAction(
       () => window.api!.serial.connect(selectedPort, baudRate),
       `Connected to ${selectedPort}.`
@@ -209,8 +226,33 @@ export const Controls: React.FC<ControlsProps> = ({
     }
   };
 
+  const parseSpeedList = (raw: string): number[] =>
+    raw
+      .split(/[,\s]+/)
+      .map((part) => Number(part))
+      .filter((value) => Number.isFinite(value) && value > 0);
+
+  const runSpeedTest = async () => {
+    if (!window.api?.serial) { setError('Electron serial bridge is not available.'); return; }
+    const speeds = parseSpeedList(speedTestSpeeds);
+    if (speeds.length === 0) {
+      setError('Enter at least one feedrate (mm/min), e.g. "1200, 1600, 2000".');
+      return;
+    }
+    setStreaming(true); setPaused(false); updateProgress(null); setError(null);
+    setMessage(`Running speed test at ${speeds.join(', ')} mm/min...`);
+    try {
+      const result = await window.api.serial.speedTest(speeds, speedTestBoundary, speedTestTurns);
+      if (!result.ok) { setError(result.error); setMessage('Speed test failed.'); }
+      else { setMessage('Speed test complete.'); setPenDown(false); }
+    } finally {
+      setStreaming(false); setPaused(false); updateProgress(null);
+    }
+  };
+
   const runPreparedJob = async () => {
     if (!preparedJob) { setError('No generated job is ready.'); return; }
+    if (preparedJob.runBlockedReason) { setError(preparedJob.runBlockedReason); return; }
     if (hasOutOfBoundsWarning(preparedJob)) {
       setError('Cannot run artwork job: generated coordinates exceed the machine work area.');
       return;
@@ -403,7 +445,7 @@ export const Controls: React.FC<ControlsProps> = ({
                   <button
                     type="button"
                     className="btn-primary"
-                    disabled={busy || jobHasOutOfBoundsWarning}
+                    disabled={busy || jobHasOutOfBoundsWarning || Boolean(jobRunBlockedReason)}
                     onClick={runPreparedJob}
                   >
                     Run Artwork Job
@@ -520,6 +562,74 @@ export const Controls: React.FC<ControlsProps> = ({
               ) : (
                 <button type="button" disabled={!connected || busy} onClick={runPerimeterTest}>
                   Run Perimeter Test
+                </button>
+              )}
+            </div>
+          </div>
+        </details>
+
+        {/* ── Speed test (Fibonacci spiral) ──────────────── */}
+        <details className="card">
+          <summary>Speed Test (Fibonacci Spiral)</summary>
+          <div className="card-body">
+            <p className="hint" style={{ marginBottom: 12 }}>
+              Draws one golden spiral per feedrate, left to right, each kept under a 2 in boundary.
+              Compare line quality and corner rounding to find your fastest clean drawing speed.
+            </p>
+            <div className="field-row">
+              <label htmlFor="speed-test-speeds">Feedrates (mm/min)</label>
+              <input
+                id="speed-test-speeds"
+                type="text"
+                inputMode="numeric"
+                placeholder="1200, 1600, 2000"
+                value={speedTestSpeeds}
+                disabled={streaming}
+                onChange={(e) => setSpeedTestSpeeds(e.target.value)}
+              />
+            </div>
+            <div className="field-row">
+              <label htmlFor="speed-test-boundary">Boundary ({unitLabel})</label>
+              <input
+                id="speed-test-boundary"
+                type="number"
+                min={displayLengthInput(12.7, units)}
+                max={displayLengthInput(50.79, units)}
+                step={displayLengthInput(1, units)}
+                value={displayLengthInput(speedTestBoundary, units)}
+                disabled={streaming}
+                onChange={(e) =>
+                  setSpeedTestBoundary(Math.min(50.79, toMillimeters(Number(e.target.value), units)))
+                }
+              />
+            </div>
+            <div className="field-row">
+              <label htmlFor="speed-test-turns">Turns</label>
+              <input
+                id="speed-test-turns"
+                type="number"
+                min={1}
+                max={8}
+                step={0.5}
+                value={speedTestTurns}
+                disabled={streaming}
+                onChange={(e) => setSpeedTestTurns(Number(e.target.value))}
+              />
+            </div>
+            <div className="field-row">
+              {streaming ? (
+                <>
+                  {paused ? (
+                    <button type="button" onClick={resumeJob}>Resume</button>
+                  ) : (
+                    <button type="button" onClick={pauseJob}>Pause</button>
+                  )}
+                  <button type="button" onClick={cancelJob}>Cancel</button>
+                  <button type="button" onClick={cancelAndReturnToOrigin}>Cancel + Origin</button>
+                </>
+              ) : (
+                <button type="button" disabled={!connected || busy} onClick={runSpeedTest}>
+                  Run Speed Test
                 </button>
               )}
             </div>

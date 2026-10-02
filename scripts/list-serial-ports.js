@@ -1,5 +1,13 @@
 const { SerialPort } = require('serialport');
 
+function displayPath(portPath) {
+  if (process.platform === 'darwin' && portPath.startsWith('/dev/tty.')) {
+    return portPath.replace('/dev/tty.', '/dev/cu.');
+  }
+
+  return portPath;
+}
+
 SerialPort.list()
   .then((ports) => {
     if (ports.length === 0) {
@@ -14,7 +22,7 @@ SerialPort.list()
         port.vendorId && port.productId ? `${port.vendorId}:${port.productId}` : undefined
       ].filter(Boolean);
 
-      console.log(`${port.path}${details.length ? ` - ${details.join(' - ')}` : ''}`);
+      console.log(`${displayPath(port.path)}${details.length ? ` - ${details.join(' - ')}` : ''}`);
     }
   })
   .catch((error) => {
