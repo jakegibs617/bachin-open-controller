@@ -27,8 +27,8 @@ on a feature branch (never `master`):
    raise the PR on `READY FOR PR`.
 
 Only the main session edits `CHANGELOG.md`, commits, pushes, bumps the version
-or runs `npm run package`. No agent runs `npm run test:hardware`. Small doc-only changes
-can skip steps 1–3.
+or runs `npm run package`. No agent runs `npm run test:hardware`. Small doc-only
+changes can skip steps 1–3.
 
 ## Required Finish Steps
 
