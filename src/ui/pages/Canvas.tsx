@@ -1649,11 +1649,11 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
             return (
               <>
                 <pattern id={minorId} width={minor} height={minor} patternUnits="userSpaceOnUse">
-                  <path d={`M ${minor} 0 L 0 0 0 ${minor}`} fill="none" stroke="#dce2e8" strokeWidth="0.25" />
+                  <path d={`M ${minor} 0 L 0 0 0 ${minor}`} fill="none" stroke="var(--canvas-grid-minor)" strokeWidth="0.25" />
                 </pattern>
                 <pattern id={majorId} width={major} height={major} patternUnits="userSpaceOnUse">
                   <rect width={major} height={major} fill={`url(#${minorId})`} />
-                  <path d={`M ${major} 0 L 0 0 0 ${major}`} fill="none" stroke="#b8c4ce" strokeWidth="0.4" />
+                  <path d={`M ${major} 0 L 0 0 0 ${major}`} fill="none" stroke="var(--canvas-grid-major)" strokeWidth="0.4" />
                 </pattern>
               </>
             );
@@ -1661,7 +1661,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
         </defs>
 
         {/* Work area background */}
-        <rect x="0" y="0" width={canvas.width} height={canvas.height} fill="#fff" stroke="#d4dce0" strokeWidth="0.5" />
+        <rect x="0" y="0" width={canvas.width} height={canvas.height} fill="var(--canvas-paper)" stroke="var(--canvas-border)" strokeWidth="0.5" />
 
         {/* Grid overlay */}
         {showGrid && (
@@ -1979,7 +1979,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
                 <polygon
                   points={displayCorners.map((c) => `${c.x},${c.y}`).join(' ')}
                   fill="none"
-                  stroke="#2563eb"
+                  stroke="var(--accent-blue)"
                   strokeWidth="0.5"
                   strokeDasharray="2 1.5"
                   style={{ pointerEvents: 'none' }}
@@ -1992,8 +1992,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
                   cx={displayCorners[2].x}
                   cy={displayCorners[2].y}
                   r={2.5}
-                  fill="#2563eb"
-                  stroke="white"
+                  fill="var(--accent-blue)"
+                  stroke="var(--canvas-paper)"
                   strokeWidth="0.6"
                   style={{ cursor: isDragging && dragMode === 'resize' ? 'grabbing' : 'nwse-resize' }}
                   onPointerDown={handleResizePointerDown}
@@ -2008,7 +2008,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
                     y1={topCenter.y}
                     x2={rotateHandle.x}
                     y2={rotateHandle.y}
-                    stroke="#2563eb"
+                    stroke="var(--accent-blue)"
                     strokeWidth="0.5"
                     style={{ pointerEvents: 'none' }}
                   />
@@ -2016,8 +2016,8 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
                     cx={rotateHandle.x}
                     cy={rotateHandle.y}
                     r={2.5}
-                    fill="#2563eb"
-                    stroke="white"
+                    fill="var(--accent-blue)"
+                    stroke="var(--canvas-paper)"
                     strokeWidth="0.6"
                     style={{ cursor: isDragging && dragMode === 'rotate' ? 'grabbing' : 'crosshair' }}
                     onPointerDown={handleRotatePointerDown}
@@ -2059,10 +2059,10 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
               return (
                 <g key={i}>
                   {doneStr && (
-                    <polyline points={doneStr} fill="none" stroke="#16a34a" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+                    <polyline points={doneStr} fill="none" stroke="var(--plot-done)" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
                   )}
                   {pendingStr && (
-                    <polyline points={pendingStr} fill="none" stroke="#9ca3af" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+                    <polyline points={pendingStr} fill="none" stroke="var(--plot-pending)" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
                   )}
                 </g>
               );
@@ -2072,7 +2072,7 @@ export const Canvas: React.FC<CanvasProps> = ({ units, preparedJob, onPreparedJo
               <g style={{ pointerEvents: 'none' }}>
                 {strokeEls}
                 {curX !== null && curY !== null && (
-                  <circle cx={curX} cy={curY} r={1.8} fill="#2563eb" stroke="white" strokeWidth="0.5" />
+                  <circle cx={curX} cy={curY} r={1.8} fill="var(--accent-blue)" stroke="var(--canvas-paper)" strokeWidth="0.5" />
                 )}
               </g>
             );
