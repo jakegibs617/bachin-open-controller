@@ -1,0 +1,5 @@
+2026-10-02 97a6258 v0.0.10 BASELINE
+  jest (hardware excluded): run1 64/64, run2 64/64, run3 64/64 -> pass^3 = 1.00
+  slowest suite: raster-import.test.ts 1.1-1.6s
+  build: PASS  lint: PASS
+  hardware: not run (machine plotting)

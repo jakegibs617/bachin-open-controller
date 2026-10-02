@@ -1,0 +1,19 @@
+{
+  "sha": "97a6258",
+  "version": "0.0.10",
+  "date": "2026-10-02",
+  "suites": {
+    "raster-import.test.ts": 14,
+    "artwork-plan.test.ts": 13,
+    "gcode.test.ts": 7,
+    "speed-test.test.ts": 6,
+    "geometry.test.ts": 6,
+    "serial-grbl.test.ts": 5,
+    "svg-import.test.ts": 5,
+    "units.test.ts": 5,
+    "project-files.test.ts": 3
+  },
+  "total": 64,
+  "build": "pass",
+  "lint": "pass"
+}
