@@ -6,6 +6,7 @@ Desktop.ini
 .vscode/
 .claude/*
 !.claude/skills/
+!.claude/evals/
 
 # Future build outputs
 dist/
