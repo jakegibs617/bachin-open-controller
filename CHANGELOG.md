@@ -24,8 +24,8 @@ level summaries and practical details that help future sessions ramp up quickly.
 - `.claude/evals/` (PR #16): regression eval baseline at `97a6258`, 64/64 Jest
   tests (hardware suite excluded) passing 3/3 runs, with a grader that fails on
   any per-suite test-count drop.
-- `.gitignore`: tracks `.claude/agents/` and `.claude/evals/` alongside
-  `.claude/skills/`.
+- `.gitignore`: adds `!.claude/agents/` so the subagents are tracked alongside
+  `.claude/skills/` (the `.claude/evals/` exception came with PR #16).
 
 ### Verification
 

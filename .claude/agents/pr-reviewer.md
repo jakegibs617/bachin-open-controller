@@ -1,6 +1,6 @@
 ---
 name: pr-reviewer
-description: Final read-only code review gate before a PR is raised in Bachin Open Controller. Use last, after implementor, code-simplifier and security-reviewer. Checks correctness, tests, the session-workflow finish steps and the regression eval baseline, then gives a ready / not-ready verdict.
+description: Final read-only code review gate before a PR is raised in Bachin Open Controller. Use last, after implementor, code-simplifier, security-reviewer and the main session's finish steps and commit. Checks correctness, tests, the session-workflow finish steps and the regression eval baseline, then gives a ready / not-ready verdict.
 tools: Read, Bash, Grep, Glob
 ---
 

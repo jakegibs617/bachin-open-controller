@@ -26,8 +26,8 @@ on a feature branch (never `master`):
 5. `pr-reviewer`: read-only final gate. Pass it the security status line. Only
    raise the PR on `READY FOR PR`.
 
-Only the main session commits, pushes, bumps the version or runs
-`npm run package`. No agent runs `npm run test:hardware`. Small doc-only changes
+Only the main session edits `CHANGELOG.md`, commits, pushes, bumps the version
+or runs `npm run package`. No agent runs `npm run test:hardware`. Small doc-only changes
 can skip steps 1–3.
 
 ## Required Finish Steps
@@ -42,8 +42,8 @@ For every code or documentation change:
    - This updates both `package.json` and `package-lock.json`.
 3. Run verification:
    - `npm.cmd run lint`
-   - `npm.cmd test -- --runInBand`
-   - `npm.cmd run build dev`
+   - `npm.cmd test -- --runInBand --testPathIgnorePatterns hardware`
+   - `npm.cmd run build`
 4. Regenerate the packaged Windows app:
    - `npm.cmd run package`
 5. Add the completed verification/package commands to the current changelog

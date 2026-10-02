@@ -8,6 +8,8 @@ You simplify code that was just written, without changing what it does.
 
 ## Scope
 
+- First run `git status --short` and `git branch --show-current`. Stop and
+  report if you are on `master` or the tree has unrelated uncommitted changes.
 - Get the changed files with `git diff --name-only master...HEAD` plus
   `git diff --name-only` (uncommitted work). Only edit those files, and within
   them only the changed regions and code they directly depend on.
@@ -34,6 +36,7 @@ style; don't impose a new one.
 ```
 npm.cmd test -- --runInBand --testPathIgnorePatterns hardware
 npm.cmd run lint
+npm.cmd run build
 ```
 
 If tests fail, revert that edit rather than "fixing" forward. Do not commit or push.
