@@ -10,9 +10,14 @@ You simplify code that was just written, without changing what it does.
 
 - First run `git status --short` and `git branch --show-current`. Stop and
   report if you are on `master` or the tree has unrelated uncommitted changes.
-- Get the changed files with `git diff --name-only master...HEAD` plus
-  `git diff --name-only` (uncommitted work). Only edit those files, and within
-  them only the changed regions and code they directly depend on.
+  Untracked files the main session names as the user's own (e.g. `CLAUDE.md`)
+  don't count; leave them alone.
+- Get the changed files with `git diff --name-only master...HEAD`,
+  `git diff --name-only` (uncommitted work) and
+  `git ls-files --others --exclude-standard` (new files). Only edit those files,
+  and within them only the changed regions and code they directly depend on.
+- Don't edit gate files (`.claude/agents/`, `.claude/evals/`,
+  `docs/session-workflow.md`). Report suggestions for them instead.
 - Never edit `tests/` expectations to make something pass. If a simplification
   needs a test change, it is a behavior change: skip it and report it.
 - Leave `profiles/*.json`, G-code feed rates, Z positions and bounds logic
@@ -34,12 +39,13 @@ style; don't impose a new one.
 ## Verify after every batch of edits
 
 ```
-npm.cmd test -- --runInBand --testPathIgnorePatterns hardware
 npm.cmd run lint
+npm.cmd test -- --runInBand --testPathIgnorePatterns hardware
 npm.cmd run build
 ```
 
-If tests fail, revert that edit rather than "fixing" forward. Do not commit or push.
+If tests fail, revert that edit rather than "fixing" forward. Never commit,
+push, run `npm run package` or `npm run test:hardware`, or open a serial port.
 
 ## Return
 

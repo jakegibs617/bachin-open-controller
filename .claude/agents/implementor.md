@@ -27,6 +27,10 @@ generates, so correctness beats speed.
   runs after you.
 - Never copy proprietary Bachin Draw/BachinMaker code, assets or formats
   (`docs/compatibility-legal.md`).
+- Don't edit gate files (`.claude/agents/`, `.claude/evals/`,
+  `docs/session-workflow.md`) unless the task is to change them, and never lower
+  `.claude/evals/baseline.json` to make a check pass. Edit `profiles/` only when
+  the task requires it, and say why.
 
 ## Machine safety (non-negotiable)
 

@@ -14,21 +14,32 @@ as incomplete until the runnable build has been regenerated.
 
 ## Subagent Pipeline
 
-For code changes, run the project subagents in `.claude/agents/` in this order,
-on a feature branch (never `master`):
+A **code change** is any changed file outside `docs/`, `README*` and
+`CHANGELOG.md`, plus `docs/session-workflow.md`. For code changes, run the
+project subagents in `.claude/agents/` in this order, on a feature branch (never
+`master`):
 
 1. `implementor`: writes the change test-first and runs lint, tests and build.
 2. `code-simplifier`: behavior-preserving cleanup of the branch's changed code.
-3. `security-reviewer`: read-only security and machine-safety review. A
-   `SECURITY: BLOCK` result goes back to step 1.
+3. `security-reviewer`: read-only security and machine-safety review, ending in
+   `SECURITY: <status> @<sha>`. `BLOCK` or `WARN` goes back to step 1.
 4. Main session: the finish steps below (changelog, version bump, verification,
-   package), then commit.
-5. `pr-reviewer`: read-only final gate. Pass it the security status line. Only
-   raise the PR on `READY FOR PR`.
+   package), then commit. If this step changes any code, run step 3 again on
+   the new commit.
+5. `pr-reviewer`: read-only final gate. Pass it the security status line and
+   whether the user approved any gate-file changes. Only raise the PR on
+   `READY FOR PR`.
+
+**Gate files** (`profiles/`, `.claude/agents/`, `.claude/evals/`,
+`docs/session-workflow.md`) steer the machine or the review gates themselves.
+Changing them always needs step 3 and the user's explicit approval, even when
+the edit looks like docs. The implementor only edits them when the task is to
+change them.
 
 Only the main session edits `CHANGELOG.md`, commits, pushes, bumps the version
-or runs `npm run package`. No agent runs `npm run test:hardware`. Small doc-only
-changes can skip steps 1–3.
+or runs `npm run package`. No agent runs `npm run test:hardware` or opens a
+serial port. Changes limited to `docs/` (other than this file), `README*` and
+`CHANGELOG.md` can skip steps 1–3.
 
 ## Required Finish Steps
 
