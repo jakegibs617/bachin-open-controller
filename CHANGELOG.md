@@ -4,6 +4,37 @@ All notable project changes should be recorded here during each coding session.
 Use the newest package version as the heading, and include both commit-message
 level summaries and practical details that help future sessions ramp up quickly.
 
+## [0.0.11] - 2026-10-02
+
+### Added (Claude Code workflow)
+
+- `.claude/agents/`: four project subagents for the development workflow.
+  - `implementor`: test-first changes; never commits, bumps versions or packages.
+  - `code-simplifier`: behavior-preserving cleanup limited to the branch's
+    changed code; leaves profile values and G-code numbers identical.
+  - `security-reviewer`: read-only. Checks the IPC trust boundary, machine
+    bounds, importers and clean-room against
+    `docs/architecture-security-assessment.md`. Ends with
+    `SECURITY: BLOCK|WARN|PASS`.
+  - `pr-reviewer`: read-only final gate. Blocks on security WARN/BLOCK (or no
+    status for a code change), failing lint/test/build/regression eval, or a
+    missing changelog entry.
+- `docs/session-workflow.md`: new "Subagent Pipeline" section with the order
+  implementor → code-simplifier → security-reviewer → finish steps → pr-reviewer.
+- `.claude/evals/` (PR #16): regression eval baseline at `97a6258`, 64/64 Jest
+  tests (hardware suite excluded) passing 3/3 runs, with a grader that fails on
+  any per-suite test-count drop.
+- `.gitignore`: tracks `.claude/agents/` and `.claude/evals/` alongside
+  `.claude/skills/`.
+
+### Verification
+
+- No app code changed.
+- `npm.cmd run lint`: pass
+- `npm.cmd test -- --runInBand --testPathIgnorePatterns hardware`: pass (64/64)
+- `npm.cmd run build`: pass
+- `npm.cmd run package`: deferred, because a plot was running from the packaged app.
+
 ## [0.0.10] - 2026-09-30
 
 ### Added

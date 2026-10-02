@@ -7,6 +7,7 @@ Desktop.ini
 .claude/*
 !.claude/skills/
 !.claude/evals/
+!.claude/agents/
 
 # Future build outputs
 dist/

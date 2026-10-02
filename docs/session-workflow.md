@@ -12,6 +12,24 @@ as incomplete until the runnable build has been regenerated.
 - On Windows PowerShell, prefer `npm.cmd` instead of `npm` if execution policy
   blocks `npm.ps1`.
 
+## Subagent Pipeline
+
+For code changes, run the project subagents in `.claude/agents/` in this order,
+on a feature branch (never `master`):
+
+1. `implementor`: writes the change test-first and runs lint, tests and build.
+2. `code-simplifier`: behavior-preserving cleanup of the branch's changed code.
+3. `security-reviewer`: read-only security and machine-safety review. A
+   `SECURITY: BLOCK` result goes back to step 1.
+4. Main session: the finish steps below (changelog, version bump, verification,
+   package), then commit.
+5. `pr-reviewer`: read-only final gate. Pass it the security status line. Only
+   raise the PR on `READY FOR PR`.
+
+Only the main session commits, pushes, bumps the version or runs
+`npm run package`. No agent runs `npm run test:hardware`. Small doc-only changes
+can skip steps 1–3.
+
 ## Required Finish Steps
 
 For every code or documentation change:
