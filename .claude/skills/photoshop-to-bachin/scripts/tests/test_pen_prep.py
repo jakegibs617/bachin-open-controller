@@ -153,3 +153,17 @@ def test_keep_style_keeps_texture_dots_among_other_ink(tmp_path):
     out, _ = run(tmp_path, ink, "--style", "keep")
 
     assert out[508:515, 420:580].sum() >= 9 * 9 * 0.9
+
+
+def test_never_overwrites_the_input(tmp_path):
+    src = tmp_path / "card-black.png"
+    ink = np.zeros((H, W), bool); ink[500, 100:900] = True
+    Image.fromarray(np.where(ink, 0, 255).astype(np.uint8), "L").save(src)
+    before = src.read_bytes()
+
+    res = subprocess.run([sys.executable, str(SCRIPT), str(src), "--card", "4x6", "--out-dir", str(tmp_path)],
+                         capture_output=True, text=True)
+
+    assert res.returncode != 0
+    assert "would overwrite" in res.stderr
+    assert src.read_bytes() == before

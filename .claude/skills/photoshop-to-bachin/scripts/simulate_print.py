@@ -2,8 +2,8 @@
 """Preview how a card will print with a real pen, and how long it will take.
 
 Usage:
-  simulate_print.py PLAN.boc.json [--pen 0.5] [--dpi 300] [-o preview.png]
-  simulate_print.py LAYER.png [LAYER.png ...] --card 4x6 [--pen 0.5] [-o preview.png]
+  simulate_print.py PLAN.boc.json [--pen 0.35] [--dpi 300] [-o preview.png]
+  simulate_print.py LAYER.png [LAYER.png ...] --card 4x6 [--pen 0.35] [-o preview.png]
 
 The controller's preview draws every stroke as a hairline, so dense hatching looks fine on screen
 and then merges into a solid mass on paper. This draws each stroke at the pen's real line width,
@@ -16,6 +16,8 @@ and an estimated time from the layer's saved speeds (TA4 defaults: draw 1600, tr
 import argparse
 import json
 import math
+import re
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -30,23 +32,34 @@ INKS = {"black": (25, 25, 25), "green": (40, 100, 35), "red": (200, 30, 40), "ye
 
 
 def ink_for(name, preview_color=None):
-    for key, rgb in INKS.items():
-        if key in name.lower():
-            return rgb
+    """The layer's own preview color if it has one; otherwise an ink named as a whole word in the file name
+    (card-red.png is red, colored.png is not)."""
     if preview_color and preview_color.startswith("#") and len(preview_color) == 7:
         return tuple(int(preview_color[i:i + 2], 16) for i in (1, 3, 5))
+    words = re.split(r"[-_. ]+", name.lower())
+    for key, rgb in INKS.items():
+        if key in words:
+            return rgb
     return INKS["black"]
 
 
 def placed_strokes(obj):
-    """The layer's strokes in bed mm (the controller scales around the layer's own center)."""
+    """The layer's strokes in bed mm, placed like the app's applyArtworkTransform (src/ui/artworkPlan.ts):
+    scale and flip, then rotate, all around the layer's own center, then offset."""
     b = [p["bounds"] for p in obj["paths"]]
     cx = (min(x["minX"] for x in b) + max(x["maxX"] for x in b)) / 2
     cy = (min(x["minY"] for x in b) + max(x["maxY"] for x in b)) / 2
     t = obj["transform"]
-    sx, sy = t["scale"] / 100, t.get("scaleY", t["scale"]) / 100
-    return [[(cx + t["x"] + (s["x"] - cx) * sx, cy + t["y"] + (s["y"] - cy) * sy) for s in p["segments"]]
-            for p in obj["paths"]]
+    sx = t["scale"] / 100 * (-1 if t.get("flipX") else 1)
+    sy = t.get("scaleY", t["scale"]) / 100 * (-1 if t.get("flipY") else 1)
+    rad = math.radians(t.get("rotation", 0))
+    cos_r, sin_r = math.cos(rad), math.sin(rad)
+
+    def place(x, y):
+        u, v = (x - cx) * sx, (y - cy) * sy
+        return cx + t["x"] + u * cos_r - v * sin_r, cy + t["y"] + u * sin_r + v * cos_r
+
+    return [[place(s["x"], s["y"]) for s in p["segments"]] for p in obj["paths"]]
 
 
 def plan_stats(strokes, speeds):
@@ -127,6 +140,10 @@ def simulate_plan(path, a):
 def simulate_pngs(paths, a):
     from pen_prep import load_ink, mm_per_px, skeletonize    # the controller draws centerlines
 
+    sizes = {p: Image.open(p).size for p in map(Path, paths)}
+    if len(set(sizes.values())) > 1:
+        listed = ", ".join(f"{p.name} {w}x{h}" for p, (w, h) in sizes.items())
+        sys.exit(f"Layers must all be the same pixel size to line up: {listed}. Re-export the whole canvas.")
     layers = []
     for p in map(Path, paths):
         ink, _ = load_ink(p)
@@ -147,7 +164,8 @@ def simulate_pngs(paths, a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("inputs", nargs="+", help="one .boc.json plan, or pen-layer PNGs")
-    ap.add_argument("--pen", type=float, default=0.5, help="line width the pen leaves on the card, mm (default 0.5)")
+    ap.add_argument("--pen", type=float, default=0.35,
+                    help="line width the pen leaves on the paper, mm (default 0.35, a measured Pilot V5)")
     ap.add_argument("--card", default=None, help="card in inches, WxH, e.g. 4x6 (needed for PNGs)")
     ap.add_argument("--dpi", type=float, default=300)
     ap.add_argument("-o", "--out", default="print-preview.png")

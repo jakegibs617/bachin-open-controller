@@ -1,22 +1,29 @@
 #!/usr/bin/env python3
-"""Make a pen-layer PNG printable with a real pen: thin dense hatching to the pen's pitch.
+"""Make a pen-layer PNG printable with a real pen.
 
 Usage:
-  pen_prep.py LAYER.png [LAYER.png ...] --card 4x6 [--pen 0.5] [--gap 0.5] [--min-length 0.8]
-              [--draw-width 0.3] [--keep-color] [--out-dir DIR]
+  pen_prep.py LAYER.png [LAYER.png ...] --card 4x6 [--style keep|thin] [--pen 0.35] [--min-length 0.8]
+              [--keep-color] [--out-dir DIR]
+  thin only: [--gap 0.5] [--draw-width 0.3] [--keep X0,Y0,X1,Y1 ...] [--no-cross]
 
-Lines that are fine on screen merge on paper when they are closer than the pen's line width.
-A 0.5 mm Pilot V5 on card leaves a ~0.5-0.6 mm line, so engraving-style hatching 0.4 mm apart
-plots as a solid mass. This script:
+--style keep (the default) leaves the art as drawn and only drops isolated specks shorter than --min-length
+(each would be a pen-down blot); specks near a real stroke, like whisker dots, are kept.
+
+--style thin redraws dense hatching at the pen's pitch, for art whose lines are closer than the pen's line width
+(they merge on paper). It:
   1. reads the layer at its size on the card (contain-fit, like fit_plan.py),
   2. reduces every stroke to its 1 px centerline (what the controller's Centerline mode draws),
   3. keeps strokes longest first, dropping the parts that run parallel to an already-kept line
-     closer than pen + gap (crossing strokes and letter parts are kept),
-  4. drops specks shorter than --min-length (each would be a pen-down blot),
+     closer than pen + gap (crossing strokes and letter parts, and --keep boxes, are kept),
+  4. drops specks shorter than --min-length,
   5. redraws what's left as solid lines --draw-width mm wide, so nothing traces faint.
-Writes DIR/<same name>.png (default: a print/ folder next to the input) and never touches the input.
+
+--pen is the line width the pen leaves on paper, measured from a test plot (make_test_card.py). A Pilot V5
+Precise 0.5 measured 0.25-0.35 mm, not 0.5. Writes DIR/<same name>.png (default: a print/ folder next to the
+input) and never overwrites the input.
 """
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -350,7 +357,8 @@ def main():
     ap.add_argument("--style", choices=("keep", "thin"), default="keep",
                     help="keep: the art as drawn, minus specks (default). thin: redraw dense shading "
                          "at the pen's pitch so it can't merge into a solid mass")
-    ap.add_argument("--pen", type=float, default=0.5, help="line width the pen leaves on the card, mm (default 0.5)")
+    ap.add_argument("--pen", type=float, default=0.35,
+                    help="line width the pen leaves on the paper, mm (default 0.35, a measured Pilot V5)")
     ap.add_argument("--gap", type=float, default=0.5, help="white space to keep between parallel lines, mm (default 0.5)")
     ap.add_argument("--min-length", type=float, default=0.8, help="drop strokes shorter than this, mm (default 0.8)")
     ap.add_argument("--draw-width", type=float, default=0.3, help="width of the output lines, mm (default 0.3)")
@@ -365,6 +373,8 @@ def main():
         ink, color = load_ink(path)
         mmpp = mm_per_px(ink.shape, a.card)
         out_dir = Path(a.out_dir) if a.out_dir else path.parent / "print"
+        if (out_dir / path.name).resolve() == path.resolve():
+            sys.exit(f"{path.name}: the output would overwrite the input; pick a different --out-dir.")
         out_dir.mkdir(parents=True, exist_ok=True)
         if a.style == "keep":
             clean, n = drop_specks(ink, a.min_length / mmpp, 1.5 / mmpp)

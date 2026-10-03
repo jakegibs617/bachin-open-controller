@@ -43,7 +43,7 @@ def main():
     a = ap.parse_args()
 
     cw, ch = (float(v) * MM for v in a.card.lower().split("x"))
-    W, H = int(cw * PX), int(ch * PX)
+    W, H = round(cw * PX), round(ch * PX)     # round: 152.4 * 10 is 1523.999...
     im = Image.new("L", (W, H), 255)
     d = ImageDraw.Draw(im)
     lw = 2                   # 0.2 mm source lines: thin, but they don't fade when traced at Ultra
@@ -105,12 +105,15 @@ def main():
         crop = src.crop(box)
         if xs > x0 and mm(xs) + crop.width > W - mm(4):          # wrap to a new row
             xs, y, row_h = x0, y + row_h + 5, 0.0
-        row_h = max(row_h, crop.height / PX)
         room_h = H - mm(y + 1) - mm(7)
+        label = a.label[k] if k < len(a.label) else path.split("/")[-1]
+        if room_h < mm(5):                                       # no room left on the card
+            print(f"skipped sample {label}: no room left on the card")
+            continue
         if crop.height > room_h:
             crop = crop.crop((0, 0, crop.width, room_h))
+        row_h = max(row_h, crop.height / PX)
         im.paste(crop, (mm(xs), mm(y + 1)))
-        label = a.label[k] if k < len(a.label) else path.split("/")[-1]
         d.text((mm(xs), mm(y + 1) + crop.height + mm(0.8)), label, font=small, fill=0)
         xs += crop.width / PX + 4
 
