@@ -1,6 +1,6 @@
 ---
 name: photoshop-to-bachin
-description: Take card art from an image or Photoshop file to a print-ready Bachin Open Controller plan for the BACHIN pen plotter. Covers checking that the art is plottable, splitting colors into one PNG per pen with Select > Color Range, checking the exported layers, importing and tracing them in the controller, fitting the plan to a card size and corner (4x6, 5x7), measuring a pen with a test card, previewing the print at the real pen width, and the plotting checklist. Use this whenever the user is making a plotter card, mentions Bachin, the plotter, pen layers, a .boc.json plan, splitting colors for the plotter, or scaling or placing artwork on a card, even if they don't name the skill.
+description: Take card art from an image or Photoshop file to a print-ready Bachin Open Controller plan for the BACHIN pen plotter. Covers checking that the art is plottable, splitting colors into one PNG per pen with Select > Color Range, checking the exported layers, importing and tracing them in the controller, fitting the plan to a card size and corner (4x6, 5x7), measuring a pen with a test card, previewing the print at the real pen width, which drawing techniques (lettering, flow lines, shading, stipple) plot well, and the plotting checklist. Use this whenever the user is making a plotter card, mentions Bachin, the plotter, pen layers, a .boc.json plan, splitting colors for the plotter, or scaling or placing artwork on a card, even if they don't name the skill.
 ---
 
 # Photoshop → Bachin pen plot
@@ -144,6 +144,32 @@ To measure, have the user scan the result at 300 dpi. Find the line width and ga
 
 Card stock may spread ink more than copy paper. Re-check on the real stock before a big run.
 
+A second sheet (2026-10-03, the technique test below) measured **0.34–0.38 mm** for most lines with a black V5 from the same assorted pack (the first sheet used blue), so the width varies
+with the pen and paper. Measure each new combination; don't reuse a number from another sheet.
+
+## Drawing techniques that plot well
+Art doesn't have to come from a traced image. Strokes generated as vectors (an `svg_path` layer) skip tracing entirely,
+so nothing is lost to Detail or threshold. A technique sampler plotted with a V5 on 2026-10-03 (generator and scan in the
+Christmas 2026 card folder, `experiments/`) gave these results:
+
+| Technique | Result | Use it? |
+|---|---|---|
+| Single-stroke lettering (Hershey fonts: script, cursive, roman, sans) | clean at 5–6 mm | yes |
+| Script drawn twice with a small offset ("doubled") | bold and clean, not blurred | **yes, best for greetings** |
+| Blackletter (Hershey gothic) | dense but readable at 5 mm | yes, for titles |
+| "Hand" lettering: small wobble, drifting baseline, slant, ends joined | reads as neat handwriting, not a gimmick | yes |
+| Lettering size | 6–8 mm good, 3–4 mm legible only just, **under ~1.8 mm clogs** | ≥ 5 mm for words that matter |
+| Spiral, waves, flow lines around a shape | clean at **0.8 mm** spacing and up | yes |
+| Waves at 0.6 mm | merge at the crests | no |
+| One-line tree, snowflake, ribbon | clean, no blobs at sharp turns | yes |
+| One-line looping drawing (crosses itself often) | dark knots at crossings | avoid many crossings |
+| Tone following form (sphere, wavy, concentric, spiral) at 0.8 mm | reads as tone | yes |
+| Stipple (0.15 mm ticks) | clean dots, no blots | yes |
+| Random scribble fill | goes solid black | no |
+
+Rules of thumb: keep parallel lines **≥ 0.8 mm apart**, keep text **≥ 5 mm** (labels ≥ 2 mm), and avoid one stroke
+crossing itself many times in a small area.
+
 ## Gotchas learned the hard way
 - **The same scale % on separate layers doesn't keep them lined up** in controller builds before PR #13, because each layer
   scales around its own center. Use "Layers linked" or `fit_plan.py`, never per-layer typing on an old build.
@@ -154,5 +180,9 @@ Card stock may spread ink more than copy paper. Re-check on the real stock befor
   (Outline + Draft). Re-trace at Centerline/Ultra. The first pen test plotted this way and taught nothing about the pen.
 - **"THE" plotted as "THF", rules under the caption missing:** Detail was below the art's size (Fine on 1523 px art).
   Use Ultra.
+- **Some words faint or with letters missing, the rest normal:** on the technique test the line jumped between 0.17 mm
+  and 0.35 mm exactly at word breaks ("Merry" faint, "Christmas" bold), and the "n" and "d" of one label didn't print.
+  Same font and size, so it's the pen (ink flow or pressure), not the art. Seat the pen firmly and scribble on scrap until
+  it flows before plotting. The cause isn't confirmed yet.
 - **Engraving plotted as a solid black mass:** first check the trace settings (above), then simulate at the measured pen
   width. Don't thin the art until a simulation shows it really merges.
