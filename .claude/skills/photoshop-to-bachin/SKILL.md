@@ -74,7 +74,7 @@ python3 <skill>/scripts/simulate_print.py plotter-layers/print/*.png --card 4x6 
   only offer thin as an option, with a simulation beside it.
 - `simulate_print.py` draws each stroke at the real pen width in its ink color, writes `preview-muddy.png` (areas where ink
   covers >70% are tinted red), and for a plan prints strokes, draw/travel length and an estimated time.
-- **Always pass the measured `--pen`** (see "Pens" below). The scripts default to 0.5 mm, which is too wide for the V5.
+- **Pass the measured `--pen`** (see "Pens" below). The scripts default to 0.35 mm, a V5 measured on copy paper.
 
 ### 5. Trace in the controller, on this computer
 On the Artwork tab, use **Open file** for each PNG. Each one becomes a layer.
@@ -109,6 +109,19 @@ node <skill>/scripts/open_in_controller.cjs <fitted-plan>.boc.json /tmp/boc-prev
 ```
 Run it in the background, wait for `READY`, then look at the screenshot. Each layer's printed X/Y should differ only by
 a small alignment correction, and every layer should show the same scale.
+
+### 6b. Preview the card and get a second opinion
+Before handing over the plan, render the whole card as it will plot, then have a fresh pair of eyes compare it with the
+source:
+1. Render the fitted plan at the measured pen width: `simulate_print.py <plan> --pen <measured> -o preview.png`. Or
+   render the full card at 300 dpi, with the inks in plot order (lightest first). Open it for the user.
+2. Spawn a **general-purpose subagent** with `references/review-prompt.md`, with the paths filled in. A fresh agent sees
+   what the author has stopped noticing. The first review caught a misread small line ("HCRRY ... NEW YCAR"), a snowflake
+   that had become an asterisk, and pine sprigs that read as seaweed.
+3. **Check every suggestion against the measured limits and the gotchas below before acting on it.** The reviewer doesn't
+   know this project's history. On the first review, it suggested smoothing the texture (which had already filled the
+   letter holes) and Outline mode on 0.9 mm stems (which plots as hollow letters).
+4. Show the user the verdict and your take on each fix, then ask which fixes to apply.
 
 ### 7. Plotting checklist (for the user, on the plotter computer)
 1. Open the fitted plan and tape the card to the chosen corner of the bed.
@@ -184,5 +197,9 @@ crossing itself many times in a small area.
   and 0.35 mm exactly at word breaks ("Merry" faint, "Christmas" bold), and the "n" and "d" of one label didn't print.
   Same font and size, so it's the pen (ink flow or pressure), not the art. Seat the pen firmly and scribble on scrap until
   it flows before plotting. The cause isn't confirmed yet.
+- **Bold or textured lettering traces to thin, wobbly single lines:** Centerline draws one 0.35 mm line down each
+  stem. Scale the text up to at least 5 mm, then draw each traced stroke a second time about 0.3 mm away (the "doubled"
+  technique). That brought back the weight on a distressed font. **Don't smooth the texture** with closing or hole
+  filling first: it filled the letter holes ("R" plotted as "λ", "B" lost its loops).
 - **Engraving plotted as a solid black mass:** first check the trace settings (above), then simulate at the measured pen
   width. Don't thin the art until a simulation shows it really merges.
