@@ -1,6 +1,6 @@
 ---
 name: photoshop-to-bachin
-description: Take card art from an image or Photoshop file to a print-ready Bachin Open Controller plan for the BACHIN pen plotter. Covers checking that the art is plottable, splitting colors into one PNG per pen with Select > Color Range, checking the exported layers, importing and tracing them in the controller, fitting the plan to a card size and corner (4x6, 5x7), and the plotting checklist. Use this whenever the user is making a plotter card, mentions Bachin, the plotter, pen layers, a .boc.json plan, splitting colors for the plotter, or scaling or placing artwork on a card, even if they don't name the skill.
+description: Take card art from an image or Photoshop file to a print-ready Bachin Open Controller plan for the BACHIN pen plotter. Covers checking that the art is plottable, splitting colors into one PNG per pen with Select > Color Range, checking the exported layers, importing and tracing them in the controller, fitting the plan to a card size and corner (4x6, 5x7), measuring a pen with a test card, previewing the print at the real pen width, which drawing techniques (lettering, flow lines, shading, stipple) plot well, and the plotting checklist. Use this whenever the user is making a plotter card, mentions Bachin, the plotter, pen layers, a .boc.json plan, splitting colors for the plotter, or scaling or placing artwork on a card, even if they don't name the skill.
 ---
 
 # Photoshop → Bachin pen plot
@@ -62,12 +62,34 @@ python3 <skill>/scripts/check_layers.py plotter-layers/*.png --card 4x6
 It FAILs on mismatched pixel sizes or a renamed PSD. It WARNs on solid fills, light ink that won't trace, and lines that
 appear in two layers. It also prints the size the art will reach on the card. Fix any FAIL before going on.
 
-### 5. Import and trace in the controller
+### 4b. Optional: prep for the pen and preview the print
+The controller previews every stroke as a hairline, so it can't show where ink will merge. These scripts can:
+```bash
+python3 <skill>/scripts/pen_prep.py plotter-layers/*.png --card 4x6 --pen 0.25       # writes plotter-layers/print/
+python3 <skill>/scripts/simulate_print.py plotter-layers/print/*.png --card 4x6 --pen 0.25 -o preview.png
+```
+- `pen_prep.py --style keep` (the default) leaves the art as drawn and only drops isolated specks shorter than
+  `--min-length` (0.8 mm). Specks near a real stroke, like whisker dots and fur dashes, are kept. Use `--keep-color` for a
+  colored layer. `--style thin` redraws dense hatching at the pen's pitch. The user has preferred the as-drawn look, so
+  only offer thin as an option, with a simulation beside it.
+- `simulate_print.py` draws each stroke at the real pen width in its ink color, writes `preview-muddy.png` (areas where ink
+  covers >70% are tinted red), and for a plan prints strokes, draw/travel length and an estimated time.
+- **Pass the measured `--pen`** (see "Pens" below). The scripts default to 0.35 mm, a V5 measured on copy paper.
+
+### 5. Trace in the controller, on this computer
 On the Artwork tab, use **Open file** for each PNG. Each one becomes a layer.
-- Raster mode **Centerline** ("finds the skeleton midline of strokes"), Detail **Fine**.
-- Threshold: start around **130**. Raise it if thin or lighter lines drop out; lower it if paper texture turns into strokes.
-  One two-color card used 130 for black and 170 for green.
-- **Save plan.** It saves to Downloads as `<first layer>.png-<timestamp>.boc.json`.
+- Raster mode **Centerline** ("finds the skeleton midline of strokes"), Detail **Ultra**, threshold **170**.
+- **Change both settings for every import.** A fresh import starts as **Outline + Draft** (`Canvas.tsx:343-344`). Outline
+  draws each line as a narrow loop round its edges (hatch becomes hollow bars, letters become outlines). Draft shrinks the
+  art to 320 px first, so it plots stair-stepped and loses thin lines.
+- Detail sets the size the art is shrunk to before tracing: Draft 320, Normal 512, Fine 1024, **Ultra 1536**, Max 2048 px
+  on the long side. Pick the smallest one that is at least the art's size, so nothing is shrunk. Shrinking averages hairlines
+  with the paper until they fall under the threshold. That is how "THE" became "THF".
+- Threshold 170 is the app default. Raise it if light lines drop out; lower it if paper texture turns into strokes.
+- **Save plan.** It saves to Downloads as `<first layer>.png-<timestamp>.boc.json`. The trace settings are stored in the
+  plan (`metadata.rasterSettings`).
+- **Hand the user a finished, fitted `.boc.json`, never a PNG to import on the plotter computer.** Settings typed in
+  instructions get lost there, and a fresh import there goes back to Outline + Draft.
 
 ### 6. Fit the plan to the card
 Either type it in the controller (with "Layers linked" on, set **W** on any layer, then X/Y), or let the script do it.
@@ -88,15 +110,78 @@ node <skill>/scripts/open_in_controller.cjs <fitted-plan>.boc.json /tmp/boc-prev
 Run it in the background, wait for `READY`, then look at the screenshot. Each layer's printed X/Y should differ only by
 a small alignment correction, and every layer should show the same scale.
 
+### 6b. Preview the card and get a second opinion
+Before handing over the plan, render the whole card as it will plot, then have a fresh pair of eyes compare it with the
+source:
+1. Render the fitted plan at the measured pen width: `simulate_print.py <plan> --pen <measured> -o preview.png`. Or
+   render the full card at 300 dpi, with the inks in plot order (lightest first). Open it for the user.
+2. Spawn a **general-purpose subagent** with `references/review-prompt.md`, with the paths filled in. A fresh agent sees
+   what the author has stopped noticing. The first review caught a misread small line ("HCRRY ... NEW YCAR"), a snowflake
+   that had become an asterisk, and pine sprigs that read as seaweed.
+3. **Check every suggestion against the measured limits and the gotchas below before acting on it.** The reviewer doesn't
+   know this project's history. On the first review, it suggested smoothing the texture (which had already filled the
+   letter holes) and Outline mode on 0.9 mm stems (which plots as hollow letters).
+4. Show the user the verdict and your take on each fix, then ask which fixes to apply.
+
 ### 7. Plotting checklist (for the user, on the plotter computer)
 1. Open the fitted plan and tape the card to the chosen corner of the bed.
 2. Machine tab → **Perimeter Test** at the card size, pen up, to confirm where the card sits.
 3. Show **one layer** and hide the rest. Plot the **lightest color first**, so the darker ink covers any overlap.
 4. Swap pens **without re-homing or moving the card**, show the next layer, and plot.
-5. Use a 0.1 mm pen for fine hatching or engraving-style art.
+5. Try a new pen or paper on scrap first (see "Pens" below).
 
 ### 8. Log it
 If the card folder keeps a prompt log, add a row: the card, the prompt and edits, what worked, what to change next time.
+
+## Pens: measure, don't guess
+A pen's nominal size isn't the line it leaves. Calibrate each new pen or paper once:
+```bash
+python3 <skill>/scripts/make_test_card.py -o pen-test-4x6.png \
+  [--sample plotter-layers/card-black.png --sample-box X0,Y0,X1,Y1 --label "as drawn" ...]
+```
+It draws hatch and cross-hatch patches at 0.5–1.2 mm, line pairs 0.2–0.8 mm apart, dashes 0.3–2 mm, lettering 2–5 mm,
+and optional crops of real art at plotting scale. Trace it at Centerline/Ultra, fit it, and hand over the plan (step 5).
+To measure, have the user scan the result at 300 dpi. Find the line width and gaps from the scan, not from a photo.
+
+**Pilot V5 Precise 0.5 mm (liquid ink), measured 2026-10-02 on copy paper:**
+
+| Test | Result |
+|---|---|
+| Line width on paper | **~0.25 mm**, so use `--pen 0.25` |
+| Single hatch | stays open at every spacing tested, down to 0.5 mm |
+| Cross-hatch | solid at 0.5, dense at 0.6–0.7, **open from 0.8 mm** |
+| Two parallel lines | merge at 0.2–0.4 mm; **read as two from 0.5 mm** apart |
+| Dashes | under 0.8 mm they fade rather than blot; 0.8 mm and longer are clean |
+| Lettering | 2 mm is legible |
+| Engraving art (0.4 mm hatch at 4x6) | prints dark but readable, not a blob, when traced at Centerline/Ultra |
+
+Card stock may spread ink more than copy paper. Re-check on the real stock before a big run.
+
+A second sheet (2026-10-03, the technique test below) measured **0.34–0.38 mm** for most lines with a black V5 from the same assorted pack (the first sheet used blue), so the width varies
+with the pen and paper. Measure each new combination; don't reuse a number from another sheet.
+
+## Drawing techniques that plot well
+Art doesn't have to come from a traced image. Strokes generated as vectors (an `svg_path` layer) skip tracing entirely,
+so nothing is lost to Detail or threshold. A technique sampler plotted with a V5 on 2026-10-03 (generator and scan in the
+Christmas 2026 card folder, `experiments/`) gave these results:
+
+| Technique | Result | Use it? |
+|---|---|---|
+| Single-stroke lettering (Hershey fonts: script, cursive, roman, sans) | clean at 5–6 mm | yes |
+| Script drawn twice with a small offset ("doubled") | bold and clean, not blurred | **yes, best for greetings** |
+| Blackletter (Hershey gothic) | dense but readable at 5 mm | yes, for titles |
+| "Hand" lettering: small wobble, drifting baseline, slant, ends joined | reads as neat handwriting, not a gimmick | yes |
+| Lettering size | 6–8 mm good, 3–4 mm legible only just, **under ~1.8 mm clogs** | ≥ 5 mm for words that matter |
+| Spiral, waves, flow lines around a shape | clean at **0.8 mm** spacing and up | yes |
+| Waves at 0.6 mm | merge at the crests | no |
+| One-line tree, snowflake, ribbon | clean, no blobs at sharp turns | yes |
+| One-line looping drawing (crosses itself often) | dark knots at crossings | avoid many crossings |
+| Tone following form (sphere, wavy, concentric, spiral) at 0.8 mm | reads as tone | yes |
+| Stipple (0.15 mm ticks) | clean dots, no blots | yes |
+| Random scribble fill | goes solid black | no |
+
+Rules of thumb: keep parallel lines **≥ 0.8 mm apart**, keep text **≥ 5 mm** (labels ≥ 2 mm), and avoid one stroke
+crossing itself many times in a small area.
 
 ## Gotchas learned the hard way
 - **The same scale % on separate layers doesn't keep them lined up** in controller builds before PR #13, because each layer
@@ -104,3 +189,17 @@ If the card folder keeps a prompt log, add a row: the card, the prompt and edits
 - **Importing a plan while another is open merges them**, adding layers instead of replacing. Clear the canvas first.
 - **"G-code 0 lines" with 2+ layers shown** is expected, because only one shown layer can run.
 - **Mixed ink in one layer:** if a check shows overlap between layers, lower the Color Range Fuzziness or erase the shared pixels.
+- **Hollow bars, outlined letters, stair-steps, missing frame edges:** the layer was traced with the import defaults
+  (Outline + Draft). Re-trace at Centerline/Ultra. The first pen test plotted this way and taught nothing about the pen.
+- **"THE" plotted as "THF", rules under the caption missing:** Detail was below the art's size (Fine on 1523 px art).
+  Use Ultra.
+- **Some words faint or with letters missing, the rest normal:** on the technique test the line jumped between 0.17 mm
+  and 0.35 mm exactly at word breaks ("Merry" faint, "Christmas" bold), and the "n" and "d" of one label didn't print.
+  Same font and size, so it's the pen (ink flow or pressure), not the art. Seat the pen firmly and scribble on scrap until
+  it flows before plotting. The cause isn't confirmed yet.
+- **Bold or textured lettering traces to thin, wobbly single lines:** Centerline draws one 0.35 mm line down each
+  stem. Scale the text up to at least 5 mm, then draw each traced stroke a second time about 0.3 mm away (the "doubled"
+  technique). That brought back the weight on a distressed font. **Don't smooth the texture** with closing or hole
+  filling first: it filled the letter holes ("R" plotted as "λ", "B" lost its loops).
+- **Engraving plotted as a solid black mass:** first check the trace settings (above), then simulate at the measured pen
+  width. Don't thin the art until a simulation shows it really merges.
